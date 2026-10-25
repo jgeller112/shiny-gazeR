@@ -1,3 +1,10 @@
+# shinygazer 0.1.0.9000
+
+* Optional low-pass filter (zero-phase Butterworth) in step 3, applied per
+  trial after interpolation. Trials are mean-centred and reflection-padded
+  first, avoiding the edge artifacts of `gazer::lowpass_filter()`, which
+  zero-pads.
+
 # shinygazer 0.1.0
 
 * First release: a Shiny app for gazeR's pupil pre-processing pipeline

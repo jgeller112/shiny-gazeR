@@ -13,6 +13,7 @@
 #' @importFrom dplyr mutate
 #' @importFrom gazer extend_blinks
 #' @importFrom stats median
+#' @importFrom signal butter
 NULL
 
 utils::globalVariables(c("trial", "time", "value", "name", "row_id", "text"))

@@ -158,6 +158,22 @@ remove_speed_outliers <- function(pupil, time, n = 16) {
   pupil
 }
 
+# Zero-phase Butterworth low-pass filter. signal::filtfilt() (which
+# gazer::lowpass_filter() uses) pads with zeros, which drags both ends of each
+# trial towards 0. Remove the mean and pad by odd reflection first, then trim
+# and add the mean back.
+lowpass_padded <- function(x, order, cutoff, hz) {
+  bf <- signal::butter(order, cutoff / (hz / 2), type = "low")
+  n <- length(x)
+  pad <- min(n - 1, ceiling(3 * hz / cutoff))
+  m <- mean(x)
+  y <- x - m
+  front <- 2 * y[1] - rev(y[2:(pad + 1)])
+  back <- 2 * y[n] - rev(y[(n - pad):(n - 1)])
+  z <- signal::filtfilt(bf, c(front, y, back))
+  z[(pad + 1):(pad + n)] + m
+}
+
 # Run the full pipeline. Returns a list with the processed sample-level data,
 # the binned data, a per-trial quality table and the parameters used.
 run_pupil_pipeline <- function(data, p, log = function(...) NULL) {
@@ -313,6 +329,30 @@ run_pupil_pipeline <- function(data, p, log = function(...) NULL) {
     ))
   }
   d <- dplyr::as_tibble(d)
+
+  # 5b. Optional low-pass filter: zero-phase Butterworth, per trial. It can't
+  # handle NAs, so it runs after interpolation.
+  if (isTRUE(p$use_lowpass)) {
+    nyquist <- p$hz / 2
+    if (is.null(p$lp_cutoff) || !is.finite(p$lp_cutoff) || p$lp_cutoff <= 0 || p$lp_cutoff >= nyquist) {
+      stop("Low-pass cutoff must be above 0 and below half the sampling rate (", nyquist, " Hz).",
+           call. = FALSE)
+    }
+    log("Low-pass filtering at ", p$lp_cutoff, " Hz (Butterworth, order ", p$lp_order, ", zero-phase)")
+    skipped <- 0L
+    lp <- function(x) {
+      if (anyNA(x) || length(x) <= 3 * (p$lp_order + 1)) {
+        skipped <<- skipped + 1L
+        return(x)
+      }
+      lowpass_padded(x, order = p$lp_order, cutoff = p$lp_cutoff, hz = p$hz)
+    }
+    d <- d %>%
+      dplyr::group_by(subject, trial) %>%
+      dplyr::mutate(pup_interp = lp(pup_interp)) %>%
+      dplyr::ungroup()
+    if (skipped) log("Low-pass: ", skipped, " trial(s) left unfiltered (missing values or too short)")
+  }
 
   # 6. Baseline correction
   value_col <- "pup_interp"

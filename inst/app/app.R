@@ -205,7 +205,16 @@ sidebar_ui <- sidebar(
       conditionalPanel("input.filter == 'moving'",
                        numericInput("ma_n", "Window (samples)", 5, min = 1)),
       radioButtons("step_first", "Order", inline = TRUE,
-                   c("Interpolate → smooth" = "interp", "Smooth → interpolate" = "smooth"))
+                   c("Interpolate → smooth" = "interp", "Smooth → interpolate" = "smooth")),
+      checkboxInput("use_lowpass", info("Low-pass filter (Butterworth)",
+                                        "Removes fast fluctuations above the cutoff with a zero-phase Butterworth filter, applied per trial after interpolation and smoothing. Pupil responses are slow, so 4 Hz is a common choice. gazer::lowpass_filter()"),
+                    FALSE),
+      conditionalPanel("input.use_lowpass",
+                       layout_columns(
+                         col_widths = c(6, 6), gap = "0.5rem",
+                         numericInput("lp_cutoff", info("Cutoff (Hz)", "Must be below half the sampling rate."), 4, min = 0.1, step = 0.5),
+                         numericInput("lp_order", "Filter order", 3, min = 1, max = 8, step = 1)
+                       ))
     ),
 
     accordion_panel(
@@ -709,6 +718,7 @@ server <- function(input, output, session) {
       missingthresh = input$missingthresh,
       interp_type = input$interp_type, filter = input$filter, step_first = input$step_first,
       maxgap = if (is.na(input$maxgap)) Inf else input$maxgap, ma_n = input$ma_n,
+      use_lowpass = input$use_lowpass, lp_cutoff = input$lp_cutoff, lp_order = input$lp_order,
       baseline = input$baseline, baseline_event = input$baseline_event,
       baseline_dur = input$baseline_dur, baseline_window = c(input$bw_start, input$bw_end),
       baseline_method = input$baseline_method,

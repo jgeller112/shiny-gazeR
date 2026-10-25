@@ -32,7 +32,7 @@ Choose **Try the example data** on the home page to look around before loading y
 | **Behaviour** | Join a per-trial table (RT, accuracy, …); exclude incorrect trials, RT cutoffs, ± k SD within subject | — |
 | **Blinks & artifacts** | Plausible pupil range; tracker or noise-based blinks (Hershman et al., 2018); blink padding; dilation-speed outliers | `detect_blinks_noise()`, `extend_blinks()`, `speed_pupil()`, `calc_mad()` |
 | **Missing data** | Exclude trials and subjects above a threshold, measured inside the analysis window | — |
-| **Interpolate & smooth** | Linear or cubic; moving average or Hanning; either order | `smooth_interpolate_pupil()` |
+| **Interpolate & smooth** | Linear or cubic; moving average or Hanning; either order; optional zero-phase Butterworth low-pass | `smooth_interpolate_pupil()` |
 | **Baseline & time-lock** | Subtractive or divisive; from an event or a fixed window; align trials to any message | `baseline_correction_pupil_msg()`, `baseline_correction_pupil()`, `onset_pupil()` |
 | **Bin** | Any combination of subject, trial and condition columns | `downsample_gaze()` |
 
