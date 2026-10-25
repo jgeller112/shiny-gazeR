@@ -190,8 +190,8 @@ sidebar_ui <- sidebar(
       conditionalPanel("input.use_mad",
                        numericInput("mad_n", "MAD multiplier (k)", 16, min = 1)),
       sliderInput("missingthresh", info("Exclusion threshold",
-                                        "Excludes any trial with MORE than this proportion of samples missing, and any participant with more than this proportion missing across all their trials (pooled). Measured after blink removal and padding, inside the analysis window when trials are time-locked."),
-                  min = 0, max = 1, value = 0.2, step = 0.05)
+                                        "Excludes any trial with MORE than this percentage of samples missing, and any participant with more than this percentage missing across all their trials (pooled). Measured after blink removal and padding, inside the analysis window when trials are time-locked."),
+                  min = 0, max = 100, value = 20, step = 5, post = "%")
     ),
 
     accordion_panel(
@@ -606,6 +606,13 @@ server <- function(input, output, session) {
   observeEvent(std(), {
     d <- std()
     req(d)
+    if (!"message" %in% names(d) || all(is.na(d$message))) {
+      # e.g. resting-state recordings: nothing to time-lock to
+      updateCheckboxInput(session, "timelock", value = FALSE)
+      if (identical(isolate(input$baseline), "event")) updateRadioButtons(session, "baseline", selected = "none")
+      showNotification("No event messages in these files, so time-locking and event-based baseline are turned off (step 4).",
+                       type = "warning", duration = 10)
+    }
     if ("message" %in% names(d)) {
       msgs <- names(sort(table(d$message), decreasing = TRUE))
       pick <- function(cur) {
@@ -813,7 +820,7 @@ server <- function(input, output, session) {
       hershman_gap = input$hershman_gap,
       fillback = input$fillback, fillforward = input$fillforward,
       use_mad = input$use_mad, mad_n = input$mad_n,
-      missingthresh = input$missingthresh,
+      missingthresh = input$missingthresh / 100,  # slider is in %, pipeline uses a proportion
       interp_type = input$interp_type, filter = input$filter, step_first = input$step_first,
       maxgap = if (is.na(input$maxgap)) Inf else input$maxgap, ma_n = input$ma_n,
       use_lowpass = identical(input$filter, "lowpass"), lp_cutoff = input$lp_cutoff, lp_order = input$lp_order,
@@ -920,6 +927,9 @@ server <- function(input, output, session) {
     starts <- ends - r$lengths + 1
     # Half a sample either side so single missing samples stay visible
     half <- if (length(time) > 1) stats::median(diff(time), na.rm = TRUE) / 2 else 0.5
+    # On long trials (e.g. minutes of resting state) short blinks would be
+    # narrower than a pixel; give each band a minimum visible width
+    half <- max(half, diff(range(time, na.rm = TRUE)) * 0.0015)
     lapply(which(r$values), function(k) list(
       type = "rect", xref = "x", yref = "paper", layer = "below",
       x0 = time[starts[k]] - half, x1 = time[ends[k]] + half, y0 = 0, y1 = 1,

@@ -1,7 +1,7 @@
 Package: shinygazer
 Type: Package
 Title: Interactive Pupil Pre-Processing with 'gazeR'
-Version: 0.3.1
+Version: 0.3.2
 Authors@R: c(
   person("Jason", "Geller", email = "drjasongeller@gmail.com", role = c("aut", "cre")))
 Description: A 'shiny' app for pre-processing pupillometry data without
@@ -21,7 +21,7 @@ Imports:
     data.table,
     dplyr,
     DT,
-    gazer (>= 0.2.7),
+    gazer (>= 0.2.8),
     jsonlite,
     markdown,
     plotly,

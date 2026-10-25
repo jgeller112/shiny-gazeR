@@ -252,6 +252,15 @@ run_pupil_pipeline <- function(data, p, log = function(...) NULL) {
   `%>%` <- dplyr::`%>%`
   n_trials <- function(d) nrow(dplyr::distinct(d, subject, trial))
 
+  if (isTRUE(p$timelock) && !length(p$timelock_event)) {
+    stop("Time-locking is on but no event is selected. Pick the event(s) in step 4, or turn time-locking off ",
+         "(e.g. for resting-state recordings with no events).", call. = FALSE)
+  }
+  if (identical(p$baseline, "event") && !length(p$baseline_event)) {
+    stop("Event-based baseline is selected but no event is chosen. Pick the event(s) in step 4, ",
+         "or use a fixed window or no baseline.", call. = FALSE)
+  }
+
   log("Starting with ", n_trials(data), " trials from ",
       length(unique(data$subject)), " subject(s)")
 
@@ -400,10 +409,12 @@ run_pupil_pipeline <- function(data, p, log = function(...) NULL) {
   }
   d <- dplyr::semi_join(d, keep, by = c("subject", "trial"))
   if (nrow(d) == 0) {
-    stop(sprintf(paste0("All trials were excluded (median %.0f%% missing per trial; trials or participants with more than %.0f%% missing are excluded). ",
-                        "Raise the exclusion threshold, check the time-lock event, or pick a single eye ",
-                        "instead of the average."),
-                 100 * stats::median(quality$prop_missing), 100 * p$missingthresh), call. = FALSE)
+    tab <- table(quality$reason)
+    why <- paste(sprintf("%s (%d)", names(tab), as.integer(tab)), collapse = ", ")
+    hint <- if (any(grepl("^no ", names(tab)))) "Check the time-lock event(s), or turn time-locking off if the recording has no events."
+            else if (any(grepl("missing", names(tab)))) sprintf("Trials or participants with more than %.0f%% missing are excluded; raise the threshold, reduce blink padding, or pick the better eye.", 100 * p$missingthresh)
+            else "See the reasons above."
+    stop("All trials were excluded: ", why, ". ", hint, call. = FALSE)
   }
 
   # 5. Interpolate + smooth. One smoothing filter: moving average or Hanning

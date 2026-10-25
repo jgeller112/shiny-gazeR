@@ -1,3 +1,17 @@
+# shinygazer 0.3.2
+
+* Exclusion threshold slider is now a percentage (0-100%) instead of a
+  proportion (0-1), matching every table in the app.
+* Files with no event messages (e.g. resting state): time-locking and
+  event-based baseline are switched off automatically, with a message,
+  instead of every trial being excluded as "no event".
+* Clear errors when time-locking or an event baseline has no event
+  selected, and when all trials are excluded (lists the actual reasons).
+* Trial viewer: blink and missing-data bands have a minimum visible width
+  on long trials (e.g. minutes of resting state).
+* Browser version: gazeR and shinygazer are bundled from r-universe; lme4
+  is no longer bundled (gazeR >= 0.2.8 makes it optional).
+
 # shinygazer 0.3.1
 
 * Methods paragraph (Export tab): ready-to-adapt text describing the run,
