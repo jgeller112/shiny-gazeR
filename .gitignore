@@ -4,3 +4,6 @@
 .DS_Store
 *.Rcheck
 shinygazer_*.tar.gz
+_deps/
+_images/
+wasm-repo/

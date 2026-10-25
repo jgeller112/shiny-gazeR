@@ -31,26 +31,34 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # One package per step: resolving all three together fails in pak
-      # ("nrow(out) must equal 1"), as their Remotes overlap. Each step adds
-      # to the same repo. shinygazer is built from this commit on GitHub.
+      # The build container can't use this workflow's GitHub token, so
+      # GitHub package lookups inside it fail. Clone the non-CRAN packages
+      # with git and build everything from local folders instead.
+      - name: Fetch saccades and gazeR sources
+        run: |
+          git clone --depth 1 https://github.com/tmalsburg/saccades.git _deps/saccades
+          git clone --depth 1 https://github.com/dmirman/gazer.git _deps/gazer
+
       - name: Build saccades (wasm)
         uses: r-wasm/actions/build-rwasm@v2
         with:
-          packages: tmalsburg/saccades/saccades
+          packages: local::_deps/saccades/saccades
           repo-path: wasm-repo
+          image-path: _images
 
       - name: Build gazeR (wasm)
         uses: r-wasm/actions/build-rwasm@v2
         with:
-          packages: dmirman/gazer
+          packages: local::_deps/gazer
           repo-path: wasm-repo
+          image-path: _images
 
       - name: Build shinygazer (wasm)
         uses: r-wasm/actions/build-rwasm@v2
         with:
-          packages: jgeller112/shiny-gazeR@${{ github.sha }}
+          packages: local::.
           repo-path: wasm-repo
+          image-path: _images
 
       - name: List built packages
         run: cat wasm-repo/bin/emscripten/contrib/*/PACKAGES
