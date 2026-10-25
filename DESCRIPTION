@@ -1,0 +1,38 @@
+Package: shinygazer
+Type: Package
+Title: Interactive Pupil Pre-Processing with 'gazeR'
+Version: 0.1.0
+Authors@R: c(
+  person("Jason", "Geller", email = "drjasongeller@gmail.com", role = c("aut", "cre")))
+Description: A 'shiny' app for pre-processing pupillometry data without
+    writing code, built on the 'gazeR' package. Reads EyeLink .asc files, SR
+    Research Data Viewer sample reports, Tobii (Titta) and Pupil Labs Neon
+    exports; removes blinks (tracker events or noise-based detection) and
+    artifacts; interpolates, smooths, baseline-corrects and time-locks trials;
+    reports data quality and behavioural exclusions; and plots time courses
+    with within- or between-subject error, rainclouds and pupil-behaviour
+    relationships. Every setting is exported so the pipeline can be reproduced.
+URL: https://github.com/jgeller112/shiny-gazeR
+BugReports: https://github.com/jgeller112/shiny-gazeR/issues
+License: GPL (>= 3)
+Depends: R (>= 4.1.0)
+Imports:
+    bslib (>= 0.7.0),
+    data.table,
+    dplyr,
+    DT,
+    gazer,
+    jsonlite,
+    markdown,
+    plotly,
+    shiny (>= 1.8.1),
+    stats,
+    tibble,
+    utils,
+    zoo
+Remotes:
+    dmirman/gazer,
+    tmalsburg/saccades/saccades
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+Config/roxygen2/version: 8.1.0

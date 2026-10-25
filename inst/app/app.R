@@ -1,0 +1,1417 @@
+# shiny gazeR: pupil pre-processing app built on gazeR
+#
+# Launch with shinygazer::run_app(). The processing itself lives in R/pipeline.R
+# (auto-sourced by Shiny); this file only defines the interface.
+#
+# Layout
+#   Sidebar  - the pipeline settings, one accordion panel per step
+#   Data     - overview of the loaded file(s)
+#   Trial    - raw vs. processed trace for any subject/trial
+#   Quality  - missing data and exclusions
+#   Results  - time course / raincloud / pupil-vs-behaviour, with within- or
+#              between-subject error
+#   Export   - downloads + processing log
+#   Help     - what each step does and which gazeR function runs it
+
+library(shiny)
+library(bslib)
+
+options(shiny.maxRequestSize = 2 * 1024^3)  # allow uploads up to 2 GB
+
+example_path <- system.file("extdata", "pupil_sample_files_edf.xls", package = "gazer")
+gazer_version <- as.character(utils::packageVersion("gazer"))
+app_version <- as.character(utils::packageVersion("shinygazer"))
+
+palette <- c("#3b5bdb", "#e8590c", "#2f9e44", "#ae3ec9", "#f08c00", "#1098ad", "#c92a2a")
+
+# ---- Helpers -------------------------------------------------------------
+
+# Guess which column holds a canonical variable (case-insensitive).
+guess_col <- function(cols, candidates) {
+  hit <- cols[match(tolower(candidates), tolower(cols))]
+  hit <- hit[!is.na(hit)]
+  if (length(hit)) hit[1] else ""
+}
+
+# Common names for each canonical column, gazeR first, then SR Data Viewer.
+col_candidates <- list(
+  subject = c("subject", "RECORDING_SESSION_LABEL", "participant", "ID"),
+  trial   = c("trial", "TRIAL_INDEX", "trial_index"),
+  time    = c("time", "sr_trial_time", "timestamp", "TIMESTAMP"),
+  pupil   = c("pupil", "AVERAGE_PUPIL_SIZE", "RIGHT_PUPIL_SIZE", "LEFT_PUPIL_SIZE"),
+  blink   = c("blink", "AVERAGE_IN_BLINK", "RIGHT_IN_BLINK", "LEFT_IN_BLINK"),
+  message = c("message", "SAMPLE_MESSAGE", "msg", "event")
+)
+
+# Input label with a hover tooltip explaining the setting.
+info <- function(label, tip) {
+  tags$span(label, tooltip(icon("circle-info", class = "info-icon"), tip, placement = "right"))
+}
+
+# Plotly defaults shared by every figure.
+tidy_plot <- function(fig) {
+  fig |>
+    plotly::layout(font = list(family = "system-ui, -apple-system, Segoe UI, sans-serif", size = 12),
+                   paper_bgcolor = "rgba(0,0,0,0)", plot_bgcolor = "rgba(0,0,0,0)",
+                   margin = list(t = 30), hovermode = "x unified") |>
+    plotly::config(displaylogo = FALSE,
+                   modeBarButtonsToRemove = c("lasso2d", "select2d", "autoScale2d"))
+}
+
+empty_state <- function(icon_name, title, text) {
+  div(class = "empty-state",
+      icon(icon_name, class = "fa-2x mb-3"),
+      h5(title),
+      p(class = "text-muted", text))
+}
+
+# ---- UI ------------------------------------------------------------------
+
+feature <- function(icon_name, title, ...) {
+  div(class = "feature",
+      div(class = "feature-icon", icon(icon_name)),
+      h6(title),
+      p(...))
+}
+
+home_ui <- div(
+  class = "home",
+  div(class = "hero",
+      tags$img(src = "logo.svg", class = "hero-logo", alt = "shiny gazeR hex logo"),
+      div(class = "hero-text",
+          h1("shiny gazeR"),
+          p(class = "lead", "Pupil pre-processing for eye-tracking data, without writing code."),
+          p(class = "text-muted",
+            "Load recordings from EyeLink, Tobii or Pupil Labs, clean them step by step, ",
+            "check every trial, and export analysis-ready data. Every setting is saved with the results, so ",
+            "the same pipeline can be re-run in R with gazeR."),
+          div(class = "hero-actions",
+              actionButton("home_load", "Load your data", icon = icon("file-import"), class = "btn-primary btn-lg"),
+              actionButton("home_example", "Try the example data", icon = icon("flask"), class = "btn-outline-primary btn-lg"),
+              actionButton("home_help", "How it works", icon = icon("circle-question"), class = "btn-link btn-lg")))),
+  div(class = "features",
+      feature("eye", "Any tracker",
+              "EyeLink .asc, SR Data Viewer reports, Tobii (Titta), Pupil Labs Neon, or your own CSV. Monocular or binocular."),
+      feature("eye-slash", "Blinks & artifacts",
+              "Tracker or noise-based (Hershman) blink detection, padding, dilation-speed outliers and plausible-range limits."),
+      feature("wave-square", "Interpolate & smooth",
+              "Linear or cubic interpolation with moving-average or Hanning smoothing, in either order."),
+      feature("ruler-horizontal", "Baseline & time-lock",
+              "Subtractive or divisive baselines from an event or a fixed window, with trials aligned to any message."),
+      feature("clipboard-check", "Quality & exclusions",
+              "Missing data per trial and subject, behavioural exclusions (accuracy, RT), and a reason for every dropped trial."),
+      feature("chart-line", "Results",
+              "Time courses with within- or between-subject error, rainclouds, and pupil vs behaviour, all downloadable.")),
+  div(class = "home-footer text-muted small",
+      paste0("shiny gazeR v", app_version, ", built on gazeR v", gazer_version, " · "),
+      "Geller, Winn, Mahr & Mirman (2020). GazeR: A package for processing gaze position and pupil size data. ",
+      tags$em("Behavior Research Methods, 52"), ", 2232–2255.")
+)
+
+sidebar_ui <- sidebar(
+  width = 360,
+  accordion(
+    id = "steps", open = "load", multiple = FALSE,
+
+    accordion_panel(
+      "1 · Load data", value = "load", icon = icon("file-import"),
+      selectInput("tracker", info("Eye tracker", "Chooses how files are read. Auto-detect reads .asc files as EyeLink and anything else as a delimited table."),
+                  c("Auto-detect" = "auto",
+                    "EyeLink (.asc)" = "eyelink",
+                    "SR Data Viewer sample report" = "sr",
+                    "Tobii (Titta)" = "tobii",
+                    "Pupil Labs Neon" = "pupillabs",
+                    "gazeR / other CSV" = "generic")),
+      uiOutput("tracker_hint"),
+      fileInput("files", NULL, multiple = TRUE, buttonLabel = "Browse…",
+                placeholder = "Select file(s)",
+                accept = c(".asc", ".csv", ".tsv", ".txt", ".xls", ".gz", ".zip")),
+      conditionalPanel("input.tracker == 'tobii'",
+                       fileInput("msg_files", "Tobii message CSVs", multiple = TRUE,
+                                 buttonLabel = "Browse…", accept = ".csv"),
+                       layout_columns(
+                         col_widths = c(6, 6), gap = "0.5rem",
+                         textInput("tobii_onset", info("Onset prefix", "Messages starting with this begin a trial."), "onset_"),
+                         textInput("tobii_offset", info("Offset prefix", "Messages starting with this end a trial. Leave blank for onset-only recordings."), "offset_")
+                       )),
+      conditionalPanel("input.tracker == 'pupillabs'",
+                       radioButtons("pl_start_mode", info("Trials start at", "Any message: every event (except recording.begin/end) starts a trial. Specific messages: only the ones listed below do, so in-between events such as 'blank' stay inside the trial."),
+                                    c("Any message" = "any", "Specific messages" = "exact"), inline = TRUE),
+                       conditionalPanel("input.pl_start_mode == 'exact'",
+                                        textInput("pl_start_messages", "Start messages (comma-separated)",
+                                                  placeholder = "trial-started-light, start-dark")),
+                       layout_columns(
+                         col_widths = c(6, 6), gap = "0.5rem",
+                         numericInput("pl_lag", info("Max event lag (ms)", "Events are attached to the nearest gaze sample within this distance."), 20, min = 1),
+                         textInput("pl_subject", info("Subject ID", "Used for loose CSVs. For a .zip, each recording folder name becomes the subject."), "sub01")
+                       ),
+                       checkboxInput("pl_aoi", info("Use surface (AOI) data", "Reads gaze_surface.csv from the Marker Mapper enrichment and adds gaze_detected_on_surface plus normalised surface x/y."), FALSE)),
+      conditionalPanel("['auto', 'eyelink', 'tobii'].indexOf(input.tracker) >= 0",
+                       radioButtons("asc_eye", info("Eye (binocular)", "Average: mean of both eyes where both are valid. Both: keeps pupil_left / pupil_right (and x, y per eye) alongside the average, so you can map either eye below. Changing this re-reads the files."),
+                                    c(Average = "average", Left = "left", Right = "right", Both = "both"), inline = TRUE)),
+      actionLink("load_example", tagList(icon("flask"), "Try the example data")),
+      tags$div(class = "section-label", "Column mapping"),
+      layout_columns(
+        col_widths = c(6, 6), gap = "0.5rem",
+        selectInput("col_subject", "Subject", NULL),
+        selectInput("col_trial", "Trial", NULL),
+        selectInput("col_time", info("Time", "Time stamp in milliseconds. For SR sample reports, choose sr_trial_time (TIMESTAMP − IP_START_TIME)."), NULL),
+        selectInput("col_pupil", "Pupil", NULL),
+        selectInput("col_blink", info("Blink", "Optional. 1 = sample is in a blink."), NULL),
+        selectInput("col_message", info("Message", "Optional. Event markers, needed for event-based baselines and time-locking."), NULL)
+      ),
+      numericInput("hz", info("Sampling rate (Hz)", "Detected from the time column when data are loaded. Check it."), 250, min = 1)
+    ),
+
+    accordion_panel(
+      "2 · Blinks & artifacts", value = "blinks", icon = icon("eye-slash"),
+      layout_columns(
+        col_widths = c(6, 6), gap = "0.5rem",
+        numericInput("pupil_min", info("Min pupil", "Samples below this become missing. Leave blank for no limit. 2 mm is a common floor for diameter in mm."), NA),
+        numericInput("pupil_max", info("Max pupil", "Samples above this become missing. Leave blank for no limit (9 mm for diameter in mm)."), NA)
+      ),
+      radioButtons("blink_method", info("Blink detection",
+                                        "Tracker: blinks flagged by the eye tracker (EyeLink blink events or your blink column), padded by the amounts below. Noise-based: Hershman, Henik & Cohen (2018). Each run of missing samples is widened along the smoothed pupil signal to cover the eyelid closing and reopening, so it needs little or no padding. gazeR::detect_blinks_noise()"),
+                   c("Tracker" = "tracker", "Noise-based (Hershman)" = "hershman"), inline = TRUE),
+      conditionalPanel("input.blink_method == 'hershman'",
+                       layout_columns(
+                         col_widths = c(6, 6), gap = "0.5rem",
+                         numericInput("hershman_smooth", info("Smoothing (ms)", "Moving-average window used to find blink onset and offset."), 10, min = 1),
+                         numericInput("hershman_gap", info("Merge gap (ms)", "Blinks closer together than this are merged."), 100, min = 0, step = 10)
+                       )),
+      checkboxInput("use_blink_col", "Also treat tracker blink samples as missing", TRUE),
+      layout_columns(
+        col_widths = c(6, 6), gap = "0.5rem",
+        numericInput("fillback", info("Extend back (ms)", "Pad every gap in the signal backwards by this much. gazeR::extend_blinks()"), 100, min = 0, step = 10),
+        numericInput("fillforward", info("Extend forward (ms)", "Pad every gap forwards by this much."), 100, min = 0, step = 10)
+      ),
+      checkboxInput("use_mad", info("Remove dilation-speed outliers",
+                                    "Drops samples whose change in pupil size is implausibly fast (median + k × MAD). gazeR::speed_pupil(), calc_mad()"), TRUE),
+      conditionalPanel("input.use_mad",
+                       numericInput("mad_n", "MAD multiplier (k)", 16, min = 1)),
+      sliderInput("missingthresh", info("Exclusion threshold",
+                                        "Trials, and whole subjects, with at least this proportion of missing samples are removed before interpolation."),
+                  min = 0, max = 1, value = 0.2, step = 0.05)
+    ),
+
+    accordion_panel(
+      "3 · Interpolate & smooth", value = "interp", icon = icon("wave-square"),
+      radioButtons("interp_type", "Interpolation", inline = TRUE,
+                   c(Linear = "linear", "Cubic spline" = "cubic")),
+      conditionalPanel("input.interp_type == 'cubic'",
+                       numericInput("maxgap", info("Max gap (ms)", "Leave blank to interpolate gaps of any length."), NA)),
+      radioButtons("filter", "Smoothing filter", inline = TRUE,
+                   c("Moving average" = "moving", Hanning = "Hann")),
+      conditionalPanel("input.filter == 'moving'",
+                       numericInput("ma_n", "Window (samples)", 5, min = 1)),
+      radioButtons("step_first", "Order", inline = TRUE,
+                   c("Interpolate → smooth" = "interp", "Smooth → interpolate" = "smooth"))
+    ),
+
+    accordion_panel(
+      "4 · Baseline & time-lock", value = "baseline", icon = icon("ruler-horizontal"),
+      radioButtons("baseline", info("Baseline correction", "Median pupil size in the baseline period, per trial."),
+                   c("Before an event" = "event", "Fixed window" = "window", None = "none")),
+      conditionalPanel("input.baseline == 'event'",
+                       layout_columns(
+                         col_widths = c(7, 5), gap = "0.5rem",
+                         selectInput("baseline_event", "Event", NULL),
+                         numericInput("baseline_dur", "ms before", 100, min = 1)
+                       )),
+      conditionalPanel("input.baseline == 'window'",
+                       layout_columns(
+                         col_widths = c(6, 6), gap = "0.5rem",
+                         numericInput("bw_start", "From (ms)", 0),
+                         numericInput("bw_end", "To (ms)", 200)
+                       )),
+      conditionalPanel("input.baseline != 'none'",
+                       radioButtons("baseline_method", NULL, inline = TRUE,
+                                    c(Subtractive = "sub", Divisive = "div"))),
+      tags$div(class = "section-label", "Time-locking"),
+      checkboxInput("timelock", info("Align trials to an event", "Sets time 0 to the event onset. gazeR::onset_pupil()"), TRUE),
+      conditionalPanel("input.timelock",
+                       selectInput("timelock_event", "Event", NULL),
+                       layout_columns(
+                         col_widths = c(6, 6), gap = "0.5rem",
+                         numericInput("win_start", "Keep from (ms)", -100),
+                         numericInput("win_end", "to (ms)", 2000)
+                       ))
+    ),
+
+    accordion_panel(
+      "5 · Bin & group", value = "bin", icon = icon("chart-column"),
+      numericInput("bin_length", "Time-bin length (ms)", 100, min = 1),
+      selectizeInput("group_cols", info("Group by", "Bins are averaged within every combination of these columns. Pick subject and/or trial plus any condition columns (for .asc files, Experiment Builder trial variables appear here). Leave empty to average everything."),
+                     c("subject", "trial"), selected = "subject", multiple = TRUE,
+                     options = list(placeholder = "Everything pooled", plugins = list("remove_button"))),
+      p(class = "text-muted small",
+        "This sets the binned data you download. Plots on the Results tab choose their own conditions and error bars.")
+    ),
+
+    accordion_panel(
+      "6 · Behaviour & exclusions", value = "behav", icon = icon("person-running"),
+      p(class = "text-muted small",
+        "Optional. A table with one row per trial (e.g. RT, accuracy, ratings), joined onto the eye data. ",
+        "Its columns can then be used for grouping, conditions and the Results plots."),
+      fileInput("behav_file", NULL, buttonLabel = "Browse…", placeholder = "csv / tsv / txt",
+                accept = c(".csv", ".tsv", ".txt")),
+      selectizeInput("behav_keys", info("Join on", "Columns that identify a trial in both files, usually subject and trial. Values must match the eye data (check the Data tab)."),
+                     c("subject", "trial"), selected = c("subject", "trial"), multiple = TRUE),
+      uiOutput("behav_status"),
+      tags$div(class = "section-label", "Exclude trials by behaviour"),
+      p(class = "text-muted small",
+        "Uses behavioural columns from the eye-tracking file (e.g. Experiment Builder trial variables) or the table above."),
+      layout_columns(
+        col_widths = c(6, 6), gap = "0.5rem",
+        selectInput("acc_col", "Accuracy column", c("(none)" = "")),
+        selectizeInput("acc_correct", info("Correct =", "Trials whose accuracy value is one of these are kept; all others are excluded."),
+                       NULL, multiple = TRUE)
+      ),
+      selectInput("rt_col", "RT column (ms)", c("(none)" = "")),
+      conditionalPanel("input.rt_col != ''",
+        layout_columns(
+          col_widths = c(4, 4, 4), gap = "0.5rem",
+          numericInput("rt_min", info("Min", "Exclude RTs below this (ms). Blank = no limit. 200 ms is common for anticipations."), NA),
+          numericInput("rt_max", info("Max", "Exclude RTs above this (ms). Blank = no limit."), NA),
+          numericInput("rt_sd", info("± SD", "Exclude RTs more than this many SDs from the subject's mean (e.g. 2.5). Computed on trials that pass the accuracy and min/max checks. Blank = off."), NA, step = 0.5)
+        )),
+      uiOutput("behav_excl_preview")
+    )
+  ),
+  div(class = "run-bar",
+      input_task_button("run", "Run pipeline", icon = icon("play"),
+                        label_busy = "Processing…", class = "w-100"))
+)
+
+ui <- page_sidebar(
+  title = tags$span(class = "app-title", tags$img(src = "logo.svg", class = "app-logo", alt = ""),
+                    "shiny gazeR",
+                    tags$small(class = "app-subtitle", "Pupil pre-processing"),
+                    tags$span(class = "badge text-bg-light ms-2", paste0("v", app_version))),
+  window_title = "shiny gazeR · pupil pre-processing",
+  theme = bs_theme(
+    version = 5,
+    primary = "#3b5bdb",
+    "navbar-bg" = "#1f2a44",
+    base_font = font_collection("system-ui", "-apple-system", "Segoe UI", "Roboto", "sans-serif"),
+    code_font = font_collection("ui-monospace", "SFMono-Regular", "Menlo", "monospace"),
+    "border-radius" = "0.5rem"
+  ),
+  fillable = FALSE,
+  tags$head(tags$link(rel = "stylesheet", href = "styles.css"),
+            tags$link(rel = "icon", type = "image/svg+xml", href = "logo.svg")),
+  sidebar = sidebar_ui,
+
+  navset_card_underline(
+    id = "tabs", selected = "home",
+
+    nav_panel(
+      tagList(icon("house"), "Home"), value = "home",
+      home_ui
+    ),
+
+    nav_panel(
+      tagList(icon("table"), "Data"), value = "data",
+      uiOutput("data_summary"),
+      uiOutput("events_ui"),
+      div(class = "d-flex align-items-center gap-3 mt-2",
+          h6(class = "mb-0", "Samples"),
+          input_switch("only_messages", "Only rows with a message", FALSE)),
+      DT::DTOutput("raw_table")
+    ),
+
+    nav_panel(
+      tagList(icon("magnifying-glass-chart"), "Trial viewer"), value = "trial",
+      div(class = "d-flex flex-wrap align-items-end gap-2 mb-2",
+          selectInput("view_subject", "Subject", NULL, width = "280px"),
+          selectInput("view_trial", "Trial", NULL, width = "140px"),
+          div(class = "btn-group mb-3",
+              actionButton("prev_trial", NULL, icon = icon("chevron-left"),
+                           class = "btn-outline-secondary btn-sm", title = "Previous trial"),
+              actionButton("next_trial", NULL, icon = icon("chevron-right"),
+                           class = "btn-outline-secondary btn-sm", title = "Next trial")),
+          div(class = "mb-3 ms-2",
+              input_switch("raw_only", info("Raw data only", "Show the signal exactly as loaded: no blink removal, interpolation, smoothing or baseline. Both eyes and gaze position are shown when the file has them."), FALSE)),
+          div(class = "ms-auto mb-3", uiOutput("trial_note"))),
+      uiOutput("trial_plot_ui")
+    ),
+
+    nav_panel(
+      tagList(icon("clipboard-check"), "Quality"), value = "quality",
+      uiOutput("quality_ui")
+    ),
+
+    nav_panel(
+      tagList(icon("chart-line"), "Results"), value = "results",
+      uiOutput("results_ui")
+    ),
+
+    nav_panel(
+      tagList(icon("download"), "Export & log"), value = "export",
+      layout_columns(
+        col_widths = c(4, 8),
+        card(
+          card_header("Downloads"),
+          p(class = "text-muted small",
+            "Save the parameters file with your outputs. It records every setting and the gazeR version, so the run can be reproduced."),
+          downloadButton("dl_samples", "Processed samples (.csv)", class = "btn-outline-primary mb-2"),
+          downloadButton("dl_binned", "Binned data (.csv)", class = "btn-outline-primary mb-2"),
+          downloadButton("dl_quality", "Trial quality (.csv)", class = "btn-outline-primary mb-2"),
+          downloadButton("dl_params", "Parameters (.json)", class = "btn-outline-primary")
+        ),
+        card(card_header("Processing log"), verbatimTextOutput("log"))
+      )
+    ),
+
+    nav_panel(
+      tagList(icon("circle-question"), "Help"), value = "help",
+      div(class = "help-content", includeMarkdown("help.md"))
+    )
+  )
+)
+
+# ---- Server --------------------------------------------------------------
+
+server <- function(input, output, session) {
+  raw <- reactiveVal(NULL)       # data as read from disk
+  result <- reactiveVal(NULL)    # output of run_pupil_pipeline()
+  log_lines <- reactiveVal(character())
+  pending_groups <- reactiveVal(NULL)  # preselected grouping for the example data
+
+  add_log <- function(...) {
+    log_lines(c(log_lines(), paste0(format(Sys.time(), "%H:%M:%S"), "  ", ...)))
+  }
+
+  # Store newly loaded data and guess the column mapping.
+  set_raw <- function(d, label) {
+    raw(d)
+    result(NULL)
+    cols <- names(d)
+    for (nm in names(col_candidates)) {
+      optional <- nm %in% c("blink", "message")
+      choices <- if (optional) c("(none)" = "", cols) else cols
+      updateSelectInput(session, paste0("col_", nm), choices = choices,
+                        selected = guess_col(cols, col_candidates[[nm]]))
+    }
+    add_log("Loaded ", label, ": ", format(nrow(d), big.mark = ","), " samples, ",
+            length(cols), " columns")
+    nav_select("tabs", "data")
+  }
+
+  # What to upload for each tracker
+  output$tracker_hint <- renderUI({
+    hint <- switch(input$tracker,
+      auto = "EyeLink .asc files, SR sample reports, or gazeR-format csv/tsv.",
+      eyelink = "One .asc file per subject (convert .edf with SR Research's edf2asc). Blinks, events and trial variables are read automatically.",
+      sr = "Data Viewer sample reports (.xls/.txt, tab-delimited). Time is taken as TIMESTAMP − IP_START_TIME.",
+      tobii = "Gaze CSVs here, message CSVs below. Each subject's two files must have the same name. Tobii has no blink events, so noise-based blink detection is turned on.",
+      pupillabs = "Upload a .zip of the Pupil Cloud Time Series export (one folder per recording, each becomes a subject), or gaze.csv, 3d_eye_states.csv and events.csv from one recording. The plausible pupil range is set to 2–9 mm.",
+      generic = "One row per sample, with subject, trial, time (ms) and pupil columns, e.g. output from parse_asc().")
+    p(class = "text-muted small mb-2", hint)
+  })
+
+  # Tobii has no tracker blinks, so default to noise-based detection
+  # Tracker-specific defaults
+  observeEvent(input$tracker, {
+    if (input$tracker == "tobii") updateRadioButtons(session, "blink_method", selected = "hershman")
+    if (input$tracker == "pupillabs") {
+      updateNumericInput(session, "pupil_min", value = 2)
+      updateNumericInput(session, "pupil_max", value = 9)
+    }
+  }, ignoreInit = TRUE)
+
+  read_uploads <- function() {
+    f <- input$files
+    switch(input$tracker,
+      eyelink = {
+        if (!all(grepl("\\.asc(\\.gz)?$", f$name, ignore.case = TRUE))) {
+          stop("EyeLink mode needs .asc files. Convert .edf files with edf2asc first.", call. = FALSE)
+        }
+        read_gazer_files(f$datapath, f$name, eye = input$asc_eye)
+      },
+      tobii = {
+        req(input$msg_files)
+        read_tobii_upload(f$datapath, f$name, input$msg_files$datapath, input$msg_files$name,
+                          eye = input$asc_eye, onset_prefix = input$tobii_onset,
+                          offset_prefix = input$tobii_offset)
+      },
+      pupillabs = {
+        starts <- trimws(unlist(strsplit(if (is.null(input$pl_start_messages)) "" else input$pl_start_messages, ",")))
+        starts <- starts[nzchar(starts)]
+        if (input$pl_start_mode == "exact" && !length(starts)) {
+          stop("List the start messages, or choose 'Any message'.", call. = FALSE)
+        }
+        read_pupillabs_upload(f$datapath, f$name, subject = input$pl_subject,
+                              start_mode = input$pl_start_mode,
+                              start_messages = if (length(starts)) starts else NULL,
+                              max_event_lag_ms = input$pl_lag, aoi = isTRUE(input$pl_aoi))
+      },
+      read_gazer_files(f$datapath, f$name, eye = input$asc_eye)
+    )
+  }
+
+  observeEvent(list(input$files, input$msg_files, input$asc_eye, input$tracker,
+                    input$tobii_onset, input$tobii_offset, input$pl_subject,
+                    input$pl_start_mode, input$pl_start_messages, input$pl_lag, input$pl_aoi), {
+    req(input$files)
+    if (input$tracker == "tobii" && is.null(input$msg_files)) return()
+    d <- tryCatch(withProgress(message = "Reading files", value = 0.3, read_uploads()),
+                  error = function(e) {
+                    showNotification(conditionMessage(e), type = "error", duration = 10)
+                    NULL
+                  })
+    req(d)
+    set_raw(d, paste(nrow(input$files), "file(s)"))
+  })
+
+  load_example <- function() {
+    pending_groups(c("subject", "script"))
+    set_raw(read_gazer_files(example_path), "example data")
+  }
+  observeEvent(input$load_example, load_example())
+  observeEvent(input$home_example, load_example())
+
+  # Landing-page buttons
+  observeEvent(input$home_load, {
+    accordion_panel_open("steps", "load")
+    showNotification("Choose your eye tracker and files in step 1 on the left.", type = "message")
+  })
+  observeEvent(input$home_help, nav_select("tabs", "help"))
+
+  # Standardised data, recomputed whenever the column mapping changes.
+  # Behavioural data (optional), joined onto the eye data by subject/trial
+  behav <- reactive({
+    req(input$behav_file)
+    tryCatch(tibble::as_tibble(data.table::fread(input$behav_file$datapath, na.strings = c("NA", ""))),
+             error = function(e) {
+               showNotification(paste("Could not read behavioural file:", conditionMessage(e)), type = "error")
+               NULL
+             })
+  })
+
+  observeEvent(behav(), {
+    b <- behav()
+    req(b)
+    keys <- intersect(c("subject", "trial"), names(b))
+    updateSelectizeInput(session, "behav_keys", choices = names(b), selected = keys)
+    add_log("Loaded behavioural data: ", nrow(b), " rows, ", ncol(b), " columns")
+  })
+
+  std <- reactive({
+    req(raw(), input$col_subject, input$col_trial, input$col_time, input$col_pupil)
+    d <- tryCatch(
+      standardise_columns(raw(), list(subject = input$col_subject, trial = input$col_trial,
+                                      time = input$col_time, pupil = input$col_pupil,
+                                      blink = input$col_blink, message = input$col_message)),
+      error = function(e) {
+        showNotification(conditionMessage(e), type = "error")
+        NULL
+      }
+    )
+    req(d)
+    if (!is.null(input$behav_file) && !is.null(behav()) && length(input$behav_keys)) {
+      d <- tryCatch(join_behaviour(d, behav(), input$behav_keys),
+                    error = function(e) {
+                      showNotification(conditionMessage(e), type = "error")
+                      d
+                    })
+    }
+    d
+  })
+
+  observeEvent(list(input$acc_col, std()), {
+    d <- std()
+    req(d)
+    if (is.null(input$acc_col) || !nzchar(input$acc_col) || !input$acc_col %in% names(d)) {
+      updateSelectizeInput(session, "acc_correct", choices = character(), selected = character())
+      return()
+    }
+    vals <- sort(unique(as.character(d[[input$acc_col]])))
+    vals <- vals[!is.na(vals)]
+    correct <- vals[tolower(vals) %in% c("1", "true", "correct", "yes", "hit", "c")]
+    current <- intersect(isolate(input$acc_correct), vals)
+    updateSelectizeInput(session, "acc_correct", choices = vals,
+                         selected = if (length(current)) current else correct)
+  })
+
+  # Live preview of how many trials the behavioural rules remove
+  output$behav_excl_preview <- renderUI({
+    d <- std()
+    req(d)
+    p <- list(acc_col = input$acc_col, acc_correct = input$acc_correct, rt_col = input$rt_col,
+              rt_min = input$rt_min, rt_max = input$rt_max, rt_sd = input$rt_sd)
+    ex <- tryCatch(behaviour_exclusions(d, p), error = function(e) NULL)
+    if (is.null(ex) || !nrow(ex)) return(NULL)
+    n_tr <- nrow(dplyr::distinct(d, subject, trial))
+    tab <- table(ex$reason)
+    div(class = "small text-warning mt-1",
+        icon("filter"), sprintf(" %d of %d trials will be excluded: ", nrow(ex), n_tr),
+        paste(sprintf("%s (%d)", names(tab), as.integer(tab)), collapse = ", "))
+  })
+
+  output$behav_status <- renderUI({
+    req(input$behav_file, behav(), std())
+    b <- behav()
+    new_cols <- setdiff(names(b), input$behav_keys)
+    new_cols <- intersect(c(new_cols, paste0(new_cols, "_behav")), names(std()))
+    if (!length(new_cols)) {
+      return(div(class = "alert alert-warning small py-2", "Not joined: check the join columns."))
+    }
+    trials <- dplyr::distinct(std(), dplyr::across(dplyr::all_of(c("subject", "trial", new_cols[1]))))
+    matched <- mean(!is.na(trials[[new_cols[1]]]))
+    div(class = paste("small", if (matched < 0.9) "text-warning" else "text-success"),
+        icon(if (matched < 0.9) "triangle-exclamation" else "check"),
+        sprintf(" %.0f%% of eye-tracking trials matched. Added: %s", 100 * matched,
+                paste(new_cols, collapse = ", ")))
+  })
+
+  # Fill in event and condition choices, and detect the sampling rate.
+  # (For .asc files, trial variables such as condition become columns.)
+  observeEvent(std(), {
+    d <- std()
+    req(d)
+    if ("message" %in% names(d)) {
+      msgs <- names(sort(table(d$message), decreasing = TRUE))
+      pick <- function(cur) {
+        if (!is.null(cur) && cur %in% msgs) return(cur)
+        if ("target" %in% msgs) return("target")
+        # Prefer something that marks a start/onset over e.g. *_END
+        starts <- msgs[grepl("start|onset|stim", msgs, ignore.case = TRUE) &
+                         !grepl("end|offset", msgs, ignore.case = TRUE)]
+        if (length(starts)) starts[1] else msgs[1]
+      }
+      updateSelectInput(session, "baseline_event", choices = msgs, selected = pick(input$baseline_event))
+      updateSelectInput(session, "timelock_event", choices = msgs, selected = pick(input$timelock_event))
+    }
+    canon <- c("subject", "trial", "time", "pupil", "blink", "message", "source_file")
+    cand <- setdiff(names(d), canon)
+    # Conditions should be low-cardinality columns
+    cand <- cand[vapply(cand, function(cl) length(unique(d[[cl]])) <= 50, logical(1))]
+    choices <- c("subject", "trial", cand)
+    current <- isolate(input$group_cols)
+    if (is.null(current)) current <- "subject"
+    updateSelectizeInput(session, "group_cols", choices = choices,
+                         selected = intersect(unique(c(current, pending_groups())), choices))
+    pending_groups(NULL)
+
+    # Behavioural exclusion choices
+    beh_cols <- setdiff(names(d), c("subject", "trial", "time", "pupil", "x", "y", "blink",
+                                    "message", "tracker_time", "source_file"))
+    guess <- function(pattern) { hit <- grep(pattern, beh_cols, ignore.case = TRUE, value = TRUE); if (length(hit)) hit[1] else "" }
+    acc_now <- isolate(input$acc_col)
+    rt_now <- isolate(input$rt_col)
+    acc_cand <- beh_cols[vapply(beh_cols, function(cl) dplyr::n_distinct(d[[cl]]) <= 10, logical(1))]
+    rt_cand <- beh_cols[vapply(beh_cols, function(cl) is.numeric(d[[cl]]), logical(1))]
+    updateSelectInput(session, "acc_col", choices = c("(none)" = "", acc_cand),
+                      selected = if (isTRUE(acc_now %in% acc_cand)) acc_now else "")
+    updateSelectInput(session, "rt_col", choices = c("(none)" = "", rt_cand),
+                      selected = if (isTRUE(rt_now %in% rt_cand)) rt_now else "")
+
+    # Trial viewer works on loaded data, before any processing
+    subs <- sort(unique(as.character(d$subject)))
+    updateSelectInput(session, "view_subject", choices = subs,
+                      selected = if (isTRUE(isolate(input$view_subject) %in% subs)) isolate(input$view_subject) else subs[1])
+
+    first <- d[d$subject == d$subject[1] & d$trial == d$trial[1], ]
+    dt <- stats::median(diff(first$time), na.rm = TRUE)
+    if (is.finite(dt) && dt > 0) updateNumericInput(session, "hz", value = round(1000 / dt))
+  })
+
+  # ---- Data tab -----------------------------------------------------------
+  output$data_summary <- renderUI({
+    d <- std()
+    if (is.null(d)) {
+      return(div(
+        class = "getting-started",
+        h4("Getting started"),
+        tags$ol(
+          tags$li(tags$b("Load"), " one or more sample-level files: EyeLink ",
+                  tags$code(".asc"), " files, gazeR-format csv/tsv, ",
+                  "or SR Data Viewer sample reports. Or ",
+                  actionLink("load_example_2", "try the example data"), "."),
+          tags$li(tags$b("Check the column mapping"), " and sampling rate in step 1."),
+          tags$li(tags$b("Adjust the settings"), " in steps 2–5. Hover the ",
+                  icon("circle-info"), " icons for details."),
+          tags$li(tags$b("Run the pipeline,"), " then inspect trials, check data quality, ",
+                  "and export.")
+        )
+      ))
+    }
+    n_tr <- nrow(dplyr::distinct(d, subject, trial))
+    miss <- mean(is.na(d$pupil) | d$pupil <= 0, na.rm = TRUE)
+    layout_columns(
+      fill = FALSE,
+      value_box("Samples", format(nrow(d), big.mark = ","), showcase_layout = "left center", showcase = icon("list-ol"), theme = "primary"),
+      value_box("Subjects", length(unique(d$subject)), showcase_layout = "left center", showcase = icon("users")),
+      value_box("Trials", format(n_tr, big.mark = ","), showcase_layout = "left center", showcase = icon("layer-group")),
+      value_box("Missing pupil", sprintf("%.1f%%", 100 * miss), showcase_layout = "left center", showcase = icon("eye-slash"),
+                theme = if (miss > 0.25) "warning" else NULL)
+    )
+  })
+  observeEvent(input$load_example_2, load_example())
+
+  # Event messages are sparse (one sample per event), so summarise them
+  # separately rather than relying on the sample preview.
+  output$events_ui <- renderUI({
+    d <- std()
+    req(d)
+    if (!"message" %in% names(d) || all(is.na(d$message))) {
+      return(div(class = "alert alert-light border small mt-3", icon("circle-info"),
+                 " No event messages mapped. Event-based baselines and time-locking need a message column."))
+    }
+    card(class = "mt-3",
+         card_header(tagList(icon("flag"), "Events found"),
+                     tags$small(class = "text-muted ms-2", "each event is stored on one sample")),
+         DT::DTOutput("events_table"))
+  })
+
+  output$events_table <- DT::renderDT({
+    d <- std()
+    req(d, "message" %in% names(d))
+    ev <- d[!is.na(d$message), c("subject", "trial", "time", "message")]
+    tab <- ev |>
+      dplyr::group_by(message) |>
+      dplyr::summarise(count = dplyr::n(),
+                       trials = dplyr::n_distinct(paste(subject, trial)),
+                       `median time (ms)` = stats::median(time), .groups = "drop") |>
+      dplyr::arrange(dplyr::desc(count))
+    DT::datatable(tab, rownames = FALSE, options = list(dom = "t", pageLength = 50))
+  })
+
+  output$raw_table <- DT::renderDT({
+    req(raw())
+    d <- raw()
+    if (isTRUE(input$only_messages) && !is.null(input$col_message) &&
+        nzchar(input$col_message) && input$col_message %in% names(d)) {
+      d <- d[!is.na(d[[input$col_message]]) & nzchar(as.character(d[[input$col_message]])), ]
+      caption <- "Rows with a message (first 500)"
+    } else {
+      caption <- "First 500 rows as loaded"
+    }
+    d <- utils::head(d, 500)
+    num <- vapply(d, is.double, logical(1))
+    d[num] <- lapply(d[num], round, 3)
+    DT::datatable(d, rownames = FALSE, caption = caption,
+                  options = list(scrollX = TRUE, pageLength = 10, dom = "tip"))
+  })
+
+  # ---- Run ----------------------------------------------------------------
+  params <- reactive({
+    list(
+      hz = input$hz, use_blink_col = input$use_blink_col,
+      acc_col = input$acc_col, acc_correct = input$acc_correct, rt_col = input$rt_col,
+      rt_min = input$rt_min, rt_max = input$rt_max, rt_sd = input$rt_sd,
+      pupil_min = input$pupil_min, pupil_max = input$pupil_max,
+      blink_method = input$blink_method, hershman_smooth = input$hershman_smooth,
+      hershman_gap = input$hershman_gap,
+      fillback = input$fillback, fillforward = input$fillforward,
+      use_mad = input$use_mad, mad_n = input$mad_n,
+      missingthresh = input$missingthresh,
+      interp_type = input$interp_type, filter = input$filter, step_first = input$step_first,
+      maxgap = if (is.na(input$maxgap)) Inf else input$maxgap, ma_n = input$ma_n,
+      baseline = input$baseline, baseline_event = input$baseline_event,
+      baseline_dur = input$baseline_dur, baseline_window = c(input$bw_start, input$bw_end),
+      baseline_method = input$baseline_method,
+      timelock = input$timelock, timelock_event = input$timelock_event,
+      window = c(input$win_start, input$win_end),
+      bin_length = input$bin_length, group_cols = input$group_cols
+    )
+  })
+
+  observeEvent(input$run, {
+    d <- std()
+    if (is.null(d)) {
+      showNotification("Load data first.", type = "warning")
+      return()
+    }
+    add_log("---- Run started ----")
+    res <- tryCatch(run_pupil_pipeline(d, params(), log = add_log),
+                    error = function(e) {
+                      add_log("ERROR: ", conditionMessage(e))
+                      showNotification(conditionMessage(e), type = "error", duration = 10)
+                      NULL
+                    })
+    req(res)
+    result(res)
+    q <- res$quality
+    showNotification(sprintf("Done: %d of %d trials retained.", sum(!q$excluded), nrow(q)),
+                     type = "message")
+    subs <- sort(unique(as.character(d$subject)))
+    updateSelectInput(session, "view_subject", choices = subs,
+                      selected = if (isTRUE(input$view_subject %in% subs)) input$view_subject else subs[1])
+    nav_select("tabs", "trial")
+  })
+
+  # ---- Trial viewer -------------------------------------------------------
+  observeEvent(list(input$view_subject, std()), {
+    req(std(), input$view_subject)
+    trials <- sort(unique(std()$trial[std()$subject == input$view_subject]))
+    updateSelectInput(session, "view_trial", choices = trials,
+                      selected = if (isTRUE(input$view_trial %in% trials)) input$view_trial else trials[1])
+  })
+
+  step_trial <- function(delta) {
+    req(std(), input$view_subject, input$view_trial)
+    trials <- as.character(sort(unique(std()$trial[std()$subject == input$view_subject])))
+    i <- match(input$view_trial, trials) + delta
+    if (i >= 1 && i <= length(trials)) updateSelectInput(session, "view_trial", selected = trials[i])
+  }
+  observeEvent(input$prev_trial, step_trial(-1))
+  observeEvent(input$next_trial, step_trial(1))
+
+  trial_status <- reactive({
+    req(result(), input$view_subject, input$view_trial)
+    q <- result()$quality
+    q[as.character(q$subject) == input$view_subject & as.character(q$trial) == input$view_trial, ]
+  })
+
+  output$trial_note <- renderUI({
+    q <- trial_status()
+    if (!nrow(q)) return(NULL)
+    pct <- if (is.na(q$prop_missing)) q$reason else sprintf("%.1f%% missing", 100 * q$prop_missing)
+    if (isTRUE(q$excluded)) {
+      tags$span(class = "badge rounded-pill text-bg-warning fs-6", icon("triangle-exclamation"),
+                "Excluded:", if (q$reason %in% c("trial missing data", "subject missing data")) pct else q$reason)
+    } else {
+      tags$span(class = "badge rounded-pill text-bg-success fs-6", icon("check"), "Kept:", pct)
+    }
+  })
+
+  output$trial_plot_ui <- renderUI({
+    if (is.null(std())) {
+      return(empty_state("magnifying-glass-chart", "No data loaded",
+                         "Load data in step 1 to view individual trials."))
+    }
+    tagList(
+      if (is.null(result()) && !isTRUE(input$raw_only))
+        div(class = "alert alert-light border small",
+            icon("circle-info"), " This is the raw trace. Run the pipeline to overlay the processed signal."),
+      uiOutput("missing_key"),
+      plotly::plotlyOutput("trial_plot", height = "560px")
+    )
+  })
+
+  blink_col <- "rgba(201,42,42,.14)"
+  miss_col <- "rgba(110,110,110,.16)"
+
+  # plotly's subplot() drops shapes/annotations added with layout(), so attach
+  # them to the built figure instead. yref = "paper" spans every panel.
+  with_overlays <- function(fig, shapes, annots) {
+    built <- plotly::plotly_build(fig)
+    built$x$layout$shapes <- c(built$x$layout$shapes, shapes)
+    built$x$layout$annotations <- c(built$x$layout$annotations, annots)
+    built
+  }
+
+  # One shaded rectangle per run of TRUE in `mask`
+  missing_shapes <- function(mask, time, fill) {
+    mask[is.na(mask)] <- FALSE
+    if (!any(mask)) return(list())
+    r <- rle(mask)
+    ends <- cumsum(r$lengths)
+    starts <- ends - r$lengths + 1
+    # Half a sample either side so single missing samples stay visible
+    half <- if (length(time) > 1) stats::median(diff(time), na.rm = TRUE) / 2 else 0.5
+    lapply(which(r$values), function(k) list(
+      type = "rect", xref = "x", yref = "paper", layer = "below",
+      x0 = time[starts[k]] - half, x1 = time[ends[k]] + half, y0 = 0, y1 = 1,
+      fillcolor = fill, line = list(width = 0)))
+  }
+
+  # Missing-data summary for the current trial, shown above the plot
+  trial_missing <- reactive({
+    req(std(), input$view_subject, input$view_trial)
+    rawt <- std()[as.character(std()$subject) == input$view_subject &
+                    as.character(std()$trial) == input$view_trial, ]
+    raw_miss <- mean(is.na(rawt$pupil) | rawt$pupil <= 0, na.rm = TRUE)
+    res <- result()
+    clean <- if (!is.null(res) && !isTRUE(input$raw_only)) {
+      res$cleaned[as.character(res$cleaned$subject) == input$view_subject &
+                    as.character(res$cleaned$trial) == input$view_trial, ]
+    }
+    if (!is.null(clean) && nrow(clean)) {
+      list(raw = raw_miss, blink = mean(clean$blink_detected > 0, na.rm = TRUE),
+           removed = mean(is.na(clean$extendpupil)))
+    } else {
+      list(raw = raw_miss, blink = if ("blink" %in% names(rawt)) mean(rawt$blink > 0, na.rm = TRUE) else NA,
+           removed = NA)
+    }
+  })
+
+  output$missing_key <- renderUI({
+    m <- trial_missing()
+    swatch <- function(col) tags$span(class = "missing-swatch", style = paste0("background:", col))
+    pct <- function(x) if (is.na(x)) "–" else sprintf("%.1f%%", 100 * x)
+    div(class = "missing-key small text-muted",
+        swatch(blink_col), "Blink ", tags$b(pct(m$blink)),
+        swatch(miss_col), if (is.na(m$removed)) "Missing in recording " else "Other removed / missing ",
+        tags$b(if (is.na(m$removed)) pct(m$raw) else pct(max(m$removed - m$blink, 0))),
+        if (!is.na(m$removed)) tagList(tags$span(class = "ms-3"), "Total missing after cleaning ", tags$b(pct(m$removed))))
+  })
+
+  # Dotted lines + labels for each event message in a trial
+  event_markers <- function(rawt) {
+    out <- list(shapes = list(), annots = list())
+    if (!"message" %in% names(rawt)) return(out)
+    ev <- rawt[!is.na(rawt$message), c("time", "message")]
+    for (i in seq_len(nrow(ev))) {
+      out$shapes[[i]] <- list(
+        type = "line", xref = "x", yref = "paper", x0 = ev$time[i], x1 = ev$time[i],
+        y0 = 0, y1 = 1, line = list(color = "rgba(110,110,110,.4)", dash = "dot", width = 1))
+      out$annots[[i]] <- list(
+        x = ev$time[i], y = 1, xref = "x", yref = "paper", text = ev$message[i],
+        showarrow = FALSE, textangle = -90, xanchor = "left", yanchor = "top",
+        font = list(size = 10, color = "#868e96"))
+    }
+    out
+  }
+
+  # Unprocessed view: every pupil and gaze column as loaded
+  raw_trial_plot <- function(rawt) {
+    eye_cols <- intersect(c("pupil_left", "pupil_right"), names(rawt))
+    pupil_cols <- if (length(eye_cols)) c(eye_cols, "pupil") else "pupil"
+    labels <- c(pupil_left = "Left eye", pupil_right = "Right eye",
+                pupil = if (length(eye_cols)) paste0("Mapped (", input$col_pupil, ")") else "Pupil")
+    cols <- c(pupil_left = palette[1], pupil_right = palette[2], pupil = "#868e96")
+    top <- plotly::plot_ly()
+    for (pc in pupil_cols) {
+      top <- plotly::add_lines(top, x = rawt$time, y = rawt[[pc]], name = labels[[pc]],
+                               line = list(color = cols[[pc]], width = if (pc == "pupil" && length(eye_cols)) 1 else 1.5,
+                                           dash = if (pc == "pupil" && length(eye_cols)) "dot" else "solid"))
+    }
+    top <- plotly::layout(top, yaxis = list(title = "Pupil size (raw)"))
+
+    gaze_cols <- intersect(c("x", "y", "x_left", "y_left", "x_right", "y_right"), names(rawt))
+    gaze_cols <- gaze_cols[vapply(gaze_cols, function(g) any(!is.na(rawt[[g]])), logical(1))]
+    # With per-eye gaze, the averaged x/y would just overlap them
+    if (any(c("x_left", "x_right") %in% gaze_cols)) gaze_cols <- setdiff(gaze_cols, c("x", "y"))
+    if (!length(gaze_cols)) return(top)
+    gaze_pal <- c(x = palette[3], y = palette[4], x_left = palette[3], y_left = palette[4],
+                  x_right = palette[6], y_right = palette[5])
+    bottom <- plotly::plot_ly()
+    for (g in gaze_cols) {
+      bottom <- plotly::add_lines(bottom, x = rawt$time, y = rawt[[g]], name = paste("Gaze", g),
+                                  line = list(color = gaze_pal[[g]], width = 1))
+    }
+    plotly::subplot(top, plotly::layout(bottom, yaxis = list(title = "Gaze (px)")),
+                    nrows = 2, shareX = TRUE, heights = c(0.62, 0.38), titleY = TRUE, margin = 0.04)
+  }
+
+  output$trial_plot <- plotly::renderPlotly({
+    req(std(), input$view_subject, input$view_trial)
+    rawt <- std()[as.character(std()$subject) == input$view_subject &
+                    as.character(std()$trial) == input$view_trial, ]
+
+    if (isTRUE(input$raw_only)) {
+      m <- event_markers(rawt)
+      blink_mask <- if ("blink" %in% names(rawt)) !is.na(rawt$blink) & rawt$blink > 0
+                    else rep(FALSE, nrow(rawt))
+      miss <- missing_shapes((is.na(rawt$pupil) | rawt$pupil <= 0) & !blink_mask, rawt$time, miss_col)
+      blinks <- missing_shapes(blink_mask, rawt$time, blink_col)
+      return(raw_trial_plot(rawt) |>
+               plotly::layout(xaxis = list(title = "Time (ms)"),
+                              legend = list(orientation = "h", y = 1.08, x = 0)) |>
+               tidy_plot() |>
+               with_overlays(c(miss, blinks, m$shapes), m$annots))
+    }
+
+    rawt$pupil[!is.na(rawt$pupil) & rawt$pupil <= 0] <- NA
+    is_this <- function(df) {
+      as.character(df$subject) == input$view_subject & as.character(df$trial) == input$view_trial
+    }
+
+    top <- plotly::plot_ly(rawt, x = ~time, y = ~pupil, type = "scatter", mode = "lines",
+                           name = "Raw", line = list(color = "rgba(134,142,150,.45)", width = 1))
+    fig <- plotly::layout(top, yaxis = list(title = "Pupil size"))
+
+    res <- result()
+    # Blink/artifact removal is kept for every trial, including excluded ones
+    clean <- if (!is.null(res)) res$cleaned[is_this(res$cleaned), ]
+    proc <- if (!is.null(res)) res$data[is_this(res$data), ]
+    if (!is.null(clean) && nrow(clean)) {
+      top <- plotly::add_trace(top, data = clean, x = ~time, y = ~extendpupil, mode = "lines",
+                               name = "Blinks/artifacts removed",
+                               line = list(color = palette[1], width = 1.5))
+      fig <- plotly::layout(top, yaxis = list(title = "Pupil size"))
+    }
+    if (!is.null(proc) && nrow(proc)) {
+      top <- top |>
+        plotly::add_trace(data = proc, x = ~time, y = ~pup_interp, mode = "lines",
+                          name = "Interpolated + smoothed",
+                          line = list(color = palette[2], width = 2.5))
+      bottom <- plotly::plot_ly(proc, x = ~time, y = ~baselinecorrectedp, type = "scatter",
+                                mode = "lines", name = "Baseline-corrected",
+                                line = list(color = palette[3], width = 2))
+      fig <- plotly::subplot(
+        plotly::layout(top, yaxis = list(title = "Pupil size")),
+        plotly::layout(bottom, yaxis = list(title = "Corrected")),
+        nrows = 2, shareX = TRUE, heights = c(0.62, 0.38), titleY = TRUE, margin = 0.04
+      )
+    }
+
+    shapes <- list()
+    annots <- list()
+
+    # Shade missing data: red = blink, grey = any other missing sample
+    # (padding, speed outliers, out-of-range, tracker dropout). Before a run,
+    # use the data as loaded.
+    if (!is.null(clean) && nrow(clean)) {
+      blink_mask <- !is.na(clean$blink_detected) & clean$blink_detected > 0
+      shapes <- c(shapes,
+                  missing_shapes(is.na(clean$extendpupil) & !blink_mask, clean$time, miss_col),
+                  missing_shapes(blink_mask, clean$time, blink_col))
+    } else {
+      blink_mask <- if ("blink" %in% names(rawt)) !is.na(rawt$blink) & rawt$blink > 0
+                    else rep(FALSE, nrow(rawt))
+      shapes <- c(shapes,
+                  missing_shapes(is.na(rawt$pupil) & !blink_mask, rawt$time, miss_col),
+                  missing_shapes(blink_mask, rawt$time, blink_col))
+    }
+
+    # Event markers as dotted vertical lines with labels
+    if ("message" %in% names(rawt)) {
+      ev <- rawt[!is.na(rawt$message), c("time", "message")]
+      for (i in seq_len(nrow(ev))) {
+        shapes[[length(shapes) + 1]] <- list(
+          type = "line", xref = "x", yref = "paper", x0 = ev$time[i], x1 = ev$time[i],
+          y0 = 0, y1 = 1, line = list(color = "rgba(110,110,110,.4)", dash = "dot", width = 1))
+        annots[[length(annots) + 1]] <- list(
+          x = ev$time[i], y = 1, xref = "x", yref = "paper", text = ev$message[i],
+          showarrow = FALSE, textangle = -90, xanchor = "left", yanchor = "top",
+          font = list(size = 10, color = "#868e96"))
+      }
+    }
+    fig |>
+      plotly::layout(xaxis = list(title = "Time (ms)"),
+                     legend = list(orientation = "h", y = 1.08, x = 0)) |>
+      tidy_plot() |>
+      with_overlays(shapes, annots)
+  })
+
+  # ---- Quality ------------------------------------------------------------
+  output$quality_ui <- renderUI({
+    if (is.null(result())) {
+      return(empty_state("clipboard-check", "Nothing to report yet",
+                         "Run the pipeline to see missing data and exclusions."))
+    }
+    q <- result()$quality
+    kept <- q[!q$excluded, ]
+    tagList(
+      layout_columns(
+        fill = FALSE,
+        value_box("Trials retained", sprintf("%d / %d", nrow(kept), nrow(q)),
+                  sprintf("%.0f%%", 100 * nrow(kept) / nrow(q)), showcase_layout = "left center", showcase = icon("layer-group"),
+                  theme = "primary"),
+        value_box("Subjects retained",
+                  sprintf("%d / %d", length(unique(kept$subject)), length(unique(q$subject))),
+                  showcase_layout = "left center", showcase = icon("users")),
+        value_box("Median missing per trial", sprintf("%.1f%%", 100 * stats::median(q$prop_missing, na.rm = TRUE)),
+                  showcase_layout = "left center", showcase = icon("eye-slash"))
+      ),
+      layout_columns(
+        col_widths = c(5, 7),
+        card(card_header("Missing data per trial"),
+             plotly::plotlyOutput("missing_hist", height = "340px")),
+        card(card_header("Trial table"), DT::DTOutput("quality_table"))
+      ),
+      card(card_header(tagList(icon("users"), "By subject")),
+           DT::DTOutput("subject_quality_table"))
+    )
+  })
+
+  output$missing_hist <- plotly::renderPlotly({
+    req(result())
+    q <- result()$quality
+    thr <- result()$params$missingthresh
+    plotly::plot_ly(q, x = ~prop_missing, color = ~subject, colors = palette,
+                    type = "histogram", nbinsx = 40) |>
+      plotly::layout(barmode = "stack",
+                     xaxis = list(title = "Proportion of samples missing", range = c(0, 1)),
+                     yaxis = list(title = "Trials"),
+                     shapes = list(list(type = "line", x0 = thr, x1 = thr, yref = "paper",
+                                        y0 = 0, y1 = 1,
+                                        line = list(color = "#c92a2a", dash = "dash"))),
+                     annotations = list(list(x = thr, y = 1, yref = "paper", text = "threshold",
+                                             showarrow = FALSE, xanchor = "left",
+                                             font = list(color = "#c92a2a")))) |>
+      tidy_plot()
+  })
+
+  # Per-subject summary of missing data and exclusions
+  output$subject_quality_table <- DT::renderDT({
+    req(result())
+    q <- result()$quality
+    by_subj <- q |>
+      dplyr::group_by(subject) |>
+      dplyr::summarise(trials = dplyr::n(),
+                       kept = sum(!excluded),
+                       excluded = sum(excluded),
+                       mean_missing = mean(prop_missing, na.rm = TRUE),
+                       median_missing = stats::median(prop_missing, na.rm = TRUE),
+                       max_missing = max(prop_missing, na.rm = TRUE),
+                       subject_excluded = any(reason == "subject missing data"),
+                       .groups = "drop")
+    DT::datatable(by_subj, rownames = FALSE,
+                  colnames = c("Subject", "Trials", "Kept", "Excluded", "Mean missing",
+                               "Median missing", "Max missing", "Subject excluded"),
+                  options = list(pageLength = 10, dom = "tip", scrollX = TRUE)) |>
+      DT::formatPercentage(c("mean_missing", "median_missing", "max_missing"), 1) |>
+      DT::formatStyle("subject_excluded", target = "row",
+                      backgroundColor = DT::styleEqual(TRUE, "rgba(240,140,0,.12)"))
+  })
+
+  output$quality_table <- DT::renderDT({
+    req(result())
+    q <- result()$quality
+    DT::datatable(q, rownames = FALSE, filter = "top",
+                  colnames = c("Subject", "Trial", "Samples", "Missing", "Subject missing", "Reason", "Excluded"),
+                  options = list(pageLength = 8, scrollX = TRUE, dom = "tip")) |>
+      DT::formatPercentage(c("prop_missing", "subject_prop_missing"), 1) |>
+      DT::formatStyle("excluded", target = "row",
+                      backgroundColor = DT::styleEqual(TRUE, "rgba(240,140,0,.12)"))
+  })
+
+  # ---- Results ------------------------------------------------------------
+  # Plots are computed from the processed samples, not the Group-by table:
+  # trials are averaged within subject first, so subjects are the unit (or
+  # trials, when there is only one subject).
+
+  canonical_cols <- c("subject", "trial", "time", "time_zero", "pupil", "x", "y", "blink",
+                      "message", "tracker_time", "source_file", "extendpupil", "pup_interp",
+                      "interp", "pup", "baseline", "baselinecorrectedp", "blink_detected",
+                      "timebins", "movingavgpup", "index")
+
+  # Columns usable as conditions: low-cardinality, not pipeline internals
+  condition_choices <- reactive({
+    req(result())
+    d <- result()$data
+    cand <- setdiff(names(d), canonical_cols)
+    cand[vapply(cand, function(cl) dplyr::n_distinct(d[[cl]]) <= 20, logical(1))]
+  })
+
+  # Numeric trial-level columns (RT, accuracy, ...) for behaviour plots
+  numeric_choices <- reactive({
+    req(result())
+    d <- result()$data
+    cand <- setdiff(names(d), canonical_cols)
+    cand[vapply(cand, function(cl) is.numeric(d[[cl]]) && dplyr::n_distinct(d[[cl]]) > 1, logical(1))]
+  })
+
+  output$results_ui <- renderUI({
+    if (is.null(result())) {
+      return(empty_state("chart-line", "No results yet",
+                         "Run the pipeline to see the pupil response."))
+    }
+    p <- result()$params
+    keep <- function(id, default) { v <- isolate(input[[id]]); if (is.null(v)) default else v }
+    default_conds <- intersect(setdiff(p$group_cols, c("subject", "trial")), condition_choices())
+    win_default <- if (isTRUE(p$timelock)) c(0, if (is.na(p$window[2])) 2000 else p$window[2]) else c(NA, NA)
+    tagList(
+      card(
+        class = "results-controls",
+        layout_columns(
+          col_widths = c(3, 3, 3, 3), gap = "0.75rem",
+          radioButtons("plot_type", "Plot", c("Time course" = "timecourse", "Raincloud" = "raincloud",
+                                              "Pupil vs behaviour" = "scatter"),
+                       selected = keep("plot_type", "timecourse")),
+          selectizeInput("plot_conds", info("Conditions", "Columns that define the lines (time course) or groups (raincloud). Behavioural columns appear here too."),
+                         condition_choices(), selected = keep("plot_conds", default_conds), multiple = TRUE,
+                         options = list(placeholder = "All trials pooled", plugins = list("remove_button"))),
+          selectInput("plot_error", info("Error", "Within-subject SE removes between-subject differences (Cousineau, 2005; Morey, 2008), which suits within-subject conditions. Between-subject SE suits conditions that differ between people. Trials are averaged within subject first; with one subject, trials are the unit."),
+                      c("Within-subject SE" = "within_se", "Within-subject 95% CI" = "within_ci",
+                        "Between-subject SE" = "between_se", "Between-subject 95% CI" = "between_ci",
+                        "None" = "none_none"),
+                      selected = keep("plot_error", "within_se")),
+          numericInput("plot_bin", "Plot bin (ms)", keep("plot_bin", p$bin_length), min = 1)
+        ),
+        conditionalPanel("input.plot_type != 'timecourse'",
+          layout_columns(
+            col_widths = c(3, 3, 3, 3), gap = "0.75rem",
+            numericInput("win_from", info("Window from (ms)", "Mean pupil in this window is used for the raincloud and the behaviour plot."), keep("win_from", win_default[1])),
+            numericInput("win_to", "Window to (ms)", keep("win_to", win_default[2])),
+            conditionalPanel("input.plot_type == 'raincloud'",
+                             checkboxInput("connect_units", "Connect each subject's points", keep("connect_units", TRUE))),
+            conditionalPanel("input.plot_type == 'scatter'",
+                             selectInput("behav_var", "Behavioural variable", numeric_choices(),
+                                         selected = keep("behav_var", intersect(c("rt", "RT", "acc"), numeric_choices())[1])),
+                             radioButtons("scatter_level", NULL, c("Trials" = "trial", "Subject means" = "subject"),
+                                          selected = keep("scatter_level", "trial"), inline = TRUE))
+          )),
+        conditionalPanel("input.plot_type == 'timecourse'",
+          layout_columns(
+            col_widths = c(3, 9), gap = "0.75rem",
+            selectInput("rt_marker", info("Mark behavioural times", "Dashed line at the mean of this column for each condition, e.g. response time. It should be in ms on the same clock as the time axis."),
+                        c("(none)" = "", numeric_choices()), selected = keep("rt_marker", ""))
+          ))
+      ),
+      card(card_header(textOutput("results_title", inline = TRUE)),
+           plotly::plotlyOutput("results_plot", height = "480px"),
+           card_footer(class = "small text-muted", textOutput("results_note", inline = TRUE))),
+      layout_columns(
+        col_widths = c(6, 6),
+        card(card_header("Plotted values"),
+             DT::DTOutput("results_table"),
+             downloadButton("dl_plot_values", "Download (.csv)", class = "btn-sm btn-outline-primary mt-2")),
+        card(card_header("Binned data (Group by)"), DT::DTOutput("binned_table"))
+      )
+    )
+  })
+
+  plot_bins <- reactive({
+    req(result(), input$plot_bin)
+    bin_for_plot(result()$data, result()$timevar, input$plot_bin, input$plot_conds)
+  })
+
+  error_spec <- reactive({
+    parts <- strsplit(if (is.null(input$plot_error)) "within_se" else input$plot_error, "_")[[1]]
+    list(se_type = if (parts[1] == "none") "within" else parts[1], interval = parts[2])
+  })
+
+  timecourse <- reactive({
+    e <- error_spec()
+    summarise_timecourse(plot_bins()$unit, e$se_type, e$interval)
+  })
+
+  windowed <- reactive({
+    req(input$plot_type != "timecourse")
+    window_means(plot_bins(), c(input$win_from, input$win_to))
+  })
+
+  y_label <- reactive({
+    p <- result()$params
+    if (p$baseline == "none") "Pupil size"
+    else if (p$baseline_method == "div") "Pupil change (proportion of baseline)"
+    else "Pupil change (baseline-subtracted)"
+  })
+
+  x_label <- reactive({
+    p <- result()$params
+    if (result()$timevar == "time_zero") paste0("Time from '", p$timelock_event, "' (ms)") else "Time (ms)"
+  })
+
+  cond_colours <- reactive({
+    conds <- sort(unique(plot_bins()$unit$condition))
+    stats::setNames(palette[(seq_along(conds) - 1) %% length(palette) + 1], conds)
+  })
+
+  output$results_title <- renderText({
+    req(input$plot_type)
+    unit <- plot_bins()$unit_name
+    n <- dplyr::n_distinct(plot_bins()$unit$unit)
+    switch(input$plot_type,
+      timecourse = paste0("Pupil time course (", n, " ", unit, if (n != 1) "s", ")"),
+      raincloud = paste0("Mean pupil, ", input$win_from, "–", input$win_to, " ms (one point per ", unit, ")"),
+      scatter = paste0("Mean pupil, ", input$win_from, "–", input$win_to, " ms, vs ", input$behav_var))
+  })
+
+  output$results_note <- renderText({
+    req(input$plot_type)
+    unit <- plot_bins()$unit_name
+    e <- error_spec()
+    J <- dplyr::n_distinct(plot_bins()$unit$condition)
+    err <- if (e$interval == "none") "No error bands."
+      else paste0(if (e$interval == "ci") "95% CI" else "±1 SE", ", ",
+                  if (e$se_type == "within" && J > 1) "within-subject (Cousineau–Morey)" else "between-units",
+                  ", across ", unit, "s",
+                  if (unit == "subject") " (trials averaged within subject first)" else " (single subject)", ".",
+                  if (e$se_type == "within" && J < 2) " Within-subject error needs 2+ conditions, so between-units error is shown." else "")
+    switch(input$plot_type,
+      timecourse = err,
+      raincloud = "Half-violin = distribution, box = median and IQR, points = each unit's mean in the window.",
+      scatter = if (identical(input$scatter_level, "subject")) "Each point is one subject's mean in each condition; lines are least-squares fits."
+                else "Each point is one trial; lines are least-squares fits per condition.")
+  })
+
+  output$results_plot <- plotly::renderPlotly({
+    req(input$plot_type)
+    switch(input$plot_type,
+           timecourse = plot_timecourse(),
+           raincloud = plot_raincloud(),
+           scatter = plot_scatter()) |>
+      tidy_plot()
+  })
+
+  plot_timecourse <- function() {
+    g <- timecourse()
+    cols <- cond_colours()
+    fig <- plotly::plot_ly()
+    for (cond in names(cols)) {
+      gi <- g[g$condition == cond, ]
+      if (error_spec()$interval != "none") {
+        fig <- plotly::add_ribbons(fig, data = gi, x = ~timebins, ymin = ~lower, ymax = ~upper,
+                                   fillcolor = grDevices::adjustcolor(cols[[cond]], 0.18),
+                                   line = list(width = 0), showlegend = FALSE, hoverinfo = "skip",
+                                   legendgroup = cond)
+      }
+      fig <- plotly::add_lines(fig, data = gi, x = ~timebins, y = ~mean, name = cond,
+                               line = list(color = cols[[cond]], width = 2.5), legendgroup = cond,
+                               text = ~paste0("n = ", n), hovertemplate = "%{y:.3f} (%{text})")
+    }
+    shapes <- list()
+    # Mean behavioural time per condition (subject means first)
+    if (!is.null(input$rt_marker) && nzchar(input$rt_marker)) {
+      conds <- intersect(input$plot_conds, names(result()$data))
+      tr <- dplyr::distinct(result()$data, dplyr::across(dplyr::all_of(unique(c("subject", "trial", conds, input$rt_marker)))))
+      tr$condition <- if (length(conds)) do.call(paste, c(tr[conds], sep = " · ")) else "All"
+      rts <- tr |>
+        dplyr::group_by(subject, condition) |>
+        dplyr::summarise(v = mean(.data[[input$rt_marker]], na.rm = TRUE), .groups = "drop") |>
+        dplyr::group_by(condition) |>
+        dplyr::summarise(v = mean(v, na.rm = TRUE), .groups = "drop")
+      for (i in seq_len(nrow(rts))) {
+        if (!is.finite(rts$v[i]) || !rts$condition[i] %in% names(cols)) next
+        shapes[[length(shapes) + 1]] <- list(
+          type = "line", xref = "x", yref = "paper", x0 = rts$v[i], x1 = rts$v[i], y0 = 0, y1 = 1,
+          line = list(color = cols[[rts$condition[i]]], dash = "dash", width = 1.5))
+        fig <- plotly::add_markers(fig, x = rts$v[i], y = 0, inherit = FALSE, showlegend = FALSE,
+                                   marker = list(size = 1, opacity = 0),
+                                   hovertemplate = paste0("Mean ", input$rt_marker, " (", rts$condition[i], "): %{x:.0f} ms<extra></extra>"))
+      }
+    }
+    plotly::layout(fig, xaxis = list(title = x_label(), zeroline = TRUE),
+                   yaxis = list(title = y_label(), zeroline = TRUE),
+                   legend = list(orientation = "h", y = 1.1, x = 0), shapes = shapes)
+  }
+
+  plot_raincloud <- function() {
+    w <- windowed()$unit
+    cols <- cond_colours()
+    conds <- names(cols)
+    set.seed(1)
+    fig <- plotly::plot_ly()
+    pos <- stats::setNames(seq_along(conds), conds)
+    w$x_pt <- pos[w$condition] - 0.28 + stats::runif(nrow(w), -0.06, 0.06)
+    if (isTRUE(input$connect_units) && length(conds) > 1) {
+      for (u in unique(w$unit)) {
+        wu <- w[w$unit == u, ]
+        wu <- wu[order(pos[wu$condition]), ]
+        fig <- plotly::add_lines(fig, x = wu$x_pt, y = wu$value, inherit = FALSE, showlegend = FALSE,
+                                 line = list(color = "rgba(134,142,150,.35)", width = 1), hoverinfo = "skip")
+      }
+    }
+    for (cond in conds) {
+      wi <- w[w$condition == cond, ]
+      col <- cols[[cond]]
+      fig <- fig |>
+        plotly::add_trace(type = "violin", x = rep(pos[[cond]], nrow(wi)), y = wi$value, name = cond,
+                          side = "positive", width = 0.7, points = FALSE, legendgroup = cond,
+                          line = list(color = col), fillcolor = grDevices::adjustcolor(col, 0.35),
+                          meanline = list(visible = FALSE), hoverinfo = "skip", showlegend = FALSE) |>
+        plotly::add_trace(type = "box", x = rep(pos[[cond]] - 0.1, nrow(wi)), y = wi$value, name = cond,
+                          width = 0.08, boxpoints = FALSE, legendgroup = cond, showlegend = FALSE,
+                          line = list(color = col), fillcolor = "rgba(255,255,255,.6)") |>
+        plotly::add_markers(x = wi$x_pt, y = wi$value, name = cond, legendgroup = cond,
+                            marker = list(color = col, size = 8, opacity = 0.8,
+                                          line = list(color = "white", width = 1)),
+                            text = wi$unit, hovertemplate = "%{text}: %{y:.3f}<extra></extra>")
+    }
+    plotly::layout(fig,
+                   xaxis = list(title = "", tickvals = unname(pos), ticktext = names(pos),
+                                range = c(0.4, length(pos) + 0.9), zeroline = FALSE),
+                   yaxis = list(title = y_label(), zeroline = TRUE),
+                   showlegend = FALSE, hovermode = "closest")
+  }
+
+  plot_scatter <- function() {
+    req(input$behav_var)
+    w <- windowed()$trial
+    beh <- dplyr::distinct(result()$data[, c("subject", "trial", input$behav_var)])
+    names(beh)[3] <- "behav"
+    beh$subject <- as.character(beh$subject)
+    w$subject <- as.character(w$subject)
+    d <- dplyr::inner_join(w, beh, by = c("subject", "trial"))
+    if (identical(input$scatter_level, "subject")) {
+      d <- d |>
+        dplyr::group_by(subject, condition) |>
+        dplyr::summarise(value = mean(value, na.rm = TRUE), behav = mean(behav, na.rm = TRUE), .groups = "drop")
+      d$label <- d$subject
+    } else {
+      d$label <- paste(d$subject, "trial", d$trial)
+    }
+    d <- d[is.finite(d$value) & is.finite(d$behav), ]
+    cols <- cond_colours()
+    fig <- plotly::plot_ly()
+    for (cond in intersect(names(cols), unique(d$condition))) {
+      di <- d[d$condition == cond, ]
+      fig <- plotly::add_markers(fig, x = di$behav, y = di$value, name = cond, legendgroup = cond,
+                                 marker = list(color = cols[[cond]], size = 7, opacity = 0.7),
+                                 text = di$label, hovertemplate = "%{text}<br>%{x:.3f}, %{y:.3f}<extra></extra>")
+      if (nrow(di) >= 3 && stats::var(di$behav) > 0) {
+        fit <- stats::lm(value ~ behav, data = di)
+        xs <- range(di$behav)
+        r <- stats::cor(di$behav, di$value)
+        fig <- plotly::add_lines(fig, x = xs, y = stats::predict(fit, data.frame(behav = xs)),
+                                 name = sprintf("%s (r = %.2f)", cond, r), legendgroup = cond,
+                                 line = list(color = cols[[cond]], width = 2), hoverinfo = "skip")
+      }
+    }
+    plotly::layout(fig, xaxis = list(title = input$behav_var),
+                   yaxis = list(title = paste(y_label(), "in window")),
+                   legend = list(orientation = "h", y = 1.1, x = 0), hovermode = "closest")
+  }
+
+  plot_values <- reactive({
+    req(input$plot_type)
+    if (input$plot_type == "timecourse") timecourse() else windowed()$unit
+  })
+
+  output$results_table <- DT::renderDT({
+    v <- plot_values()
+    num <- vapply(v, is.double, logical(1))
+    v[num] <- lapply(v[num], round, 4)
+    DT::datatable(v, rownames = FALSE, filter = "top", options = list(pageLength = 8, dom = "tip", scrollX = TRUE))
+  })
+
+  output$dl_plot_values <- downloadHandler(
+    filename = function() paste0("gazer_", input$plot_type, "_", format(Sys.time(), "%Y%m%d-%H%M"), ".csv"),
+    content = function(file) data.table::fwrite(plot_values(), file)
+  )
+
+  output$binned_table <- DT::renderDT({
+    req(result())
+    DT::datatable(result()$binned, rownames = FALSE, filter = "top",
+                  options = list(pageLength = 8, dom = "tip", scrollX = TRUE)) |>
+      DT::formatRound("aggbaseline", 4)
+  })
+
+  # ---- Export -------------------------------------------------------------
+  stamp <- function(x) paste0("gazer_", x, "_", format(Sys.time(), "%Y%m%d-%H%M"))
+  csv_download <- function(what) {
+    downloadHandler(
+      filename = function() paste0(stamp(what), ".csv"),
+      content = function(file) {
+        req(result())
+        data.table::fwrite(switch(what, samples = result()$data, binned = result()$binned,
+                                  quality = result()$quality), file)
+      }
+    )
+  }
+  output$dl_samples <- csv_download("samples")
+  output$dl_binned <- csv_download("binned")
+  output$dl_quality <- csv_download("quality")
+
+  output$dl_params <- downloadHandler(
+    filename = function() paste0(stamp("params"), ".json"),
+    content = function(file) {
+      req(result())
+      p <- result()$params
+      p$maxgap <- if (is.infinite(p$maxgap)) NULL else p$maxgap
+      out <- list(
+        shinygazer_version = app_version,
+        gazer_version = gazer_version,
+        created = format(Sys.time(), "%Y-%m-%dT%H:%M:%S%z"),
+        columns = list(subject = input$col_subject, trial = input$col_trial,
+                       time = input$col_time, pupil = input$col_pupil,
+                       blink = input$col_blink, message = input$col_message),
+        parameters = p
+      )
+      jsonlite::write_json(out, file, auto_unbox = TRUE, pretty = TRUE, null = "null")
+    }
+  )
+
+  output$log <- renderText({
+    if (!length(log_lines())) "Nothing yet." else paste(log_lines(), collapse = "\n")
+  })
+}
+
+shinyApp(ui, server)

@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 518 600" role="img" aria-labelledby="t">
+  <title id="t">shiny gazeR</title>
+  <defs>
+    <radialGradient id="iris" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#2f8f91"/>
+      <stop offset="55%" stop-color="#3aafb0"/>
+      <stop offset="100%" stop-color="#25797b"/>
+    </radialGradient>
+    <radialGradient id="sclera" cx="50%" cy="45%" r="60%">
+      <stop offset="0%" stop-color="#eef8fa"/>
+      <stop offset="100%" stop-color="#c3e3ea"/>
+    </radialGradient>
+    <clipPath id="eyeClip">
+      <path d="M118 402 Q259 284 400 402 Q259 520 118 402 Z"/>
+    </clipPath>
+  </defs>
+
+  <!-- Hex -->
+  <polygon points="259,9 509,153 509,447 259,591 9,447 9,153"
+           fill="#a3cfe0" stroke="#7aa83a" stroke-width="16" stroke-linejoin="round"/>
+
+  <!-- Name -->
+  <text x="259" y="150" text-anchor="middle"
+        font-family="Avenir Next, Avenir, Segoe UI, Helvetica Neue, Arial, sans-serif"
+        font-size="44" font-weight="600" letter-spacing="10" fill="#1d6466">SHINY</text>
+  <text x="259" y="238" text-anchor="middle"
+        font-family="Avenir Next, Avenir, Segoe UI, Helvetica Neue, Arial, sans-serif"
+        font-size="96" font-weight="500" fill="#ffffff">gazeR</text>
+
+  <!-- Tracking-box corners, as in the gazeR logo -->
+  <g fill="none" stroke="#2a9c9e" stroke-width="9" stroke-linecap="square">
+    <path d="M150 312 V292 H170"/>
+    <path d="M368 292 H388 V312"/>
+    <path d="M150 492 V512 H170"/>
+    <path d="M368 512 H388 V492"/>
+  </g>
+
+  <!-- Eye -->
+  <path d="M118 402 Q259 284 400 402 Q259 520 118 402 Z" fill="url(#sclera)"/>
+  <g clip-path="url(#eyeClip)">
+    <circle cx="259" cy="402" r="74" fill="url(#iris)"/>
+    <!-- iris fibres -->
+    <g stroke="#1f6f71" stroke-width="2" opacity=".35">
+      <line x1="259" y1="336" x2="259" y2="364"/><line x1="259" y1="440" x2="259" y2="468"/>
+      <line x1="193" y1="402" x2="221" y2="402"/><line x1="297" y1="402" x2="325" y2="402"/>
+      <line x1="212" y1="355" x2="232" y2="375"/><line x1="286" y1="429" x2="306" y2="449"/>
+      <line x1="306" y1="355" x2="286" y2="375"/><line x1="232" y1="429" x2="212" y2="449"/>
+    </g>
+    <circle cx="259" cy="402" r="74" fill="none" stroke="#1d6466" stroke-width="5"/>
+    <!-- pupil -->
+    <circle cx="259" cy="402" r="36" fill="#0b2f31"/>
+  </g>
+  <path d="M118 402 Q259 284 400 402 Q259 520 118 402 Z" fill="none" stroke="#1d6466" stroke-width="5"/>
+
+  <!-- Corneal reflection (the tracker's glint) -->
+  <circle cx="283" cy="426" r="14" fill="#ffffff"/>
+  <circle cx="303" cy="444" r="5" fill="#ffffff" opacity=".85"/>
+  <!-- sparkle -->
+  <path d="M352 318 l5 15 15 5 -15 5 -5 15 -5 -15 -15 -5 15 -5 z" fill="#ffffff" opacity=".9"/>
+</svg>
