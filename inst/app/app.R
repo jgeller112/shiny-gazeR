@@ -322,6 +322,7 @@ ui <- page_sidebar(
     nav_panel(
       tagList(icon("table"), "Data"), value = "data",
       uiOutput("data_summary"),
+      uiOutput("raw_download_ui"),
       uiOutput("events_ui"),
       div(class = "d-flex align-items-center gap-3 mt-2",
           h6(class = "mb-0", "Samples"),
@@ -1456,20 +1457,45 @@ server <- function(input, output, session) {
     content = function(file) {
       d <- dl_data()
       validate(need(!is.null(d), "Nothing to download yet."))
-      if (input$dl_format == "zip" && !nzchar(input$dl_subject) && "subject" %in% names(d)) {
-        dir <- tempfile("gazer_dl_")
-        dir.create(dir)
-        parts <- split(d, as.character(d$subject))
-        paths <- vapply(names(parts), function(sid) {
-          f <- file.path(dir, paste0(gsub("[^A-Za-z0-9_.-]", "_", sid), "_", input$dl_dataset, ".csv"))
-          data.table::fwrite(parts[[sid]], f)
-          f
-        }, character(1))
-        zip::zip(file, files = basename(paths), root = dir)
-      } else {
-        data.table::fwrite(d, file)
-      }
+      write_dataset(d, file, label = input$dl_dataset,
+                    per_subject = input$dl_format == "zip" && !nzchar(input$dl_subject))
     }
+  )
+
+  # Write one CSV, or a zip with one CSV per participant
+  write_dataset <- function(d, file, label, per_subject = FALSE) {
+    if (per_subject && "subject" %in% names(d)) {
+      dir <- tempfile("gazer_dl_")
+      dir.create(dir)
+      parts <- split(d, as.character(d$subject))
+      paths <- vapply(names(parts), function(sid) {
+        f <- file.path(dir, paste0(gsub("[^A-Za-z0-9_.-]", "_", sid), "_", label, ".csv"))
+        data.table::fwrite(parts[[sid]], f)
+        f
+      }, character(1))
+      zip::zip(file, files = basename(paths), root = dir)
+    } else {
+      data.table::fwrite(d, file)
+    }
+  }
+
+  # Shortcut on the Data tab: combined data as loaded, no pre-processing
+  output$raw_download_ui <- renderUI({
+    req(std())
+    div(class = "d-flex flex-wrap align-items-center gap-2 mt-3",
+        tags$span(class = "small text-muted me-1", icon("download"),
+                  "Combined data as loaded (no pre-processing):"),
+        downloadButton("dl_raw_csv", "All participants (.csv)", class = "btn-sm btn-outline-primary"),
+        downloadButton("dl_raw_zip", "One file per participant (.zip)", class = "btn-sm btn-outline-primary"),
+        tags$span(class = "small text-muted", "One participant at a time: Export tab."))
+  })
+  output$dl_raw_csv <- downloadHandler(
+    filename = function() paste0(stamp("raw_all"), ".csv"),
+    content = function(file) write_dataset(std(), file, "raw")
+  )
+  output$dl_raw_zip <- downloadHandler(
+    filename = function() paste0(stamp("raw_all"), ".zip"),
+    content = function(file) write_dataset(std(), file, "raw", per_subject = TRUE)
   )
 
   output$dl_samples <- csv_download("samples")
