@@ -6,6 +6,7 @@
 # they are installed at start-up. Their CRAN dependencies are listed below so
 # shinylive bundles them with the site.
 #
+# To run locally instead, use shinygazer::run_app().
 # If you fork this repository, change `site_repo` to your own GitHub Pages URL.
 
 site_repo <- "https://jgeller112.github.io/shiny-gazeR/repo"
@@ -18,7 +19,11 @@ if (FALSE) {
   library(stringr); library(tidyr); library(zoom)
 }
 
-webr::install(c("saccades", "gazer", "shinygazer"),
-              repos = c(site_repo, "https://repo.r-wasm.org"))
+# Only in the browser: in regular R, run this file (or shinygazer::run_app())
+# with the packages installed as usual.
+if (grepl("emscripten", R.version$os)) {
+  webr::install(c("saccades", "gazer", "shinygazer"),
+                repos = c(site_repo, "https://repo.r-wasm.org"))
+}
 
 shiny::shinyAppDir(system.file("app", package = "shinygazer"))
