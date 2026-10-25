@@ -4,7 +4,9 @@
 # gazeR and shinygazer are built for WebAssembly by r-universe
 # (https://jgeller112.r-universe.dev); the app installs them from there when
 # it starts. This workflow only exports shinylive-app/ (bundling the CRAN
-# packages) and publishes it.
+# packages) and publishes it. It follows posit-dev/r-shinylive's deploy-app
+# workflow (GitHub version of shinylive), but exports shinylive-app/ rather
+# than the repo root, since this repo is an R package.
 #
 # One-time setup: Settings > Pages > Build and deployment > Source:
 # "GitHub Actions".
@@ -28,6 +30,8 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    env:
+      GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -41,12 +45,15 @@ jobs:
       - uses: r-lib/actions/setup-r-dependencies@v2
         with:
           extra-packages: |
-            any::shinylive
+            github::posit-dev/r-shinylive
+            any::sessioninfo
             local::.
 
       - name: Export app with shinylive
         shell: Rscript {0}
-        run: shinylive::export("shinylive-app", "_site")
+        run: |
+          sessioninfo::session_info(c("shinylive", "shiny"))
+          shinylive::export("shinylive-app", "_site")
 
       - uses: actions/upload-pages-artifact@v3
         with:
