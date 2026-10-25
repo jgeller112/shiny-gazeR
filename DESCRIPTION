@@ -29,6 +29,7 @@ Imports:
     stats,
     tibble,
     utils,
+    zip,
     zoo
 Remotes:
     dmirman/gazer,

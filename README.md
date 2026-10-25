@@ -50,7 +50,7 @@ Choose **Try the example data** on the home page to look around before loading y
   - time courses with **within-subject (Cousineau–Morey) or between-subject** SE or 95% CI, computed across subjects after averaging trials within subject;
   - rainclouds of the mean pupil in a window;
   - pupil vs behaviour scatter plots, with optional RT markers.
-- **Export:** processed samples, binned data, trial quality, plotted values, and a JSON file with every parameter and package version.
+- **Export:** raw combined, processed or binned data, for all participants or one, as a single CSV or one CSV per participant (`.zip`); plus trial quality, plotted values, and a JSON file with every parameter and package version.
 
 ## Reading `.asc` files
 

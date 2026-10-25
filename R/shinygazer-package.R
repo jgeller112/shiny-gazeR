@@ -15,6 +15,7 @@
 #' @importFrom data.table fread
 #' @importFrom tibble as_tibble
 #' @importFrom utils head
+#' @importFrom zip zip
 NULL
 
 

@@ -111,6 +111,11 @@ The *Plotted values* table and download contain exactly what is drawn.
 | Trial quality | Missing proportion per trial and subject, and whether the trial was excluded |
 | Parameters | The column mapping, all settings and the gazeR version, as JSON |
 
+**Data by participant** (Export tab) downloads any of three datasets, for all participants or just one, as a single CSV or a `.zip` with one CSV per participant:
+- **Raw combined:** the data as loaded, one row per sample, with event messages, trial variables and any behavioural columns joined, before any cleaning. For EyeLink files this is what `read_asc()` returns.
+- **Processed samples:** after the full pipeline.
+- **Binned:** the Group-by table.
+
 ## Citing
 
 Cousineau, D. (2005). Confidence intervals in within-subject designs: A simpler solution to Loftus and Masson's method. *Tutorials in Quantitative Methods for Psychology, 1*, 42–45.

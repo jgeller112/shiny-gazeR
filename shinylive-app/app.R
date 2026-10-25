@@ -16,7 +16,7 @@ if (FALSE) {
   library(shiny); library(bslib); library(plotly); library(DT); library(jsonlite)
   library(markdown); library(data.table); library(dplyr); library(tibble); library(zoo)
   library(ggplot2); library(lme4); library(purrr); library(readr); library(signal)
-  library(stringr); library(tidyr); library(zoom)
+  library(stringr); library(tidyr); library(zoom); library(zip)
 }
 
 # Only in the browser: in regular R, run this file (or shinygazer::run_app())

@@ -357,6 +357,23 @@ ui <- page_sidebar(
 
     nav_panel(
       tagList(icon("download"), "Export & log"), value = "export",
+      card(
+        card_header(tagList(icon("users"), "Data by participant")),
+        p(class = "text-muted small",
+          tags$b("Raw combined"), " is the data as loaded, one row per sample, with messages, trial variables and any ",
+          "behavioural columns joined, before any cleaning. It's available as soon as files are loaded. ",
+          tags$b("Processed"), " and ", tags$b("binned"), " data need a pipeline run."),
+        layout_columns(
+          col_widths = c(3, 3, 3, 3), gap = "0.75rem",
+          selectInput("dl_dataset", "Dataset",
+                      c("Raw combined" = "raw", "Processed samples" = "processed", "Binned" = "binned")),
+          selectInput("dl_subject", "Participants", c("All participants" = "")),
+          radioButtons("dl_format", "Format",
+                       c("One CSV" = "csv", "One CSV per participant (.zip)" = "zip")),
+          div(class = "pt-4", downloadButton("dl_by_subject", "Download", class = "btn-primary"),
+              uiOutput("dl_by_subject_note"))
+        )
+      ),
       layout_columns(
         col_widths = c(4, 8),
         card(
@@ -1396,6 +1413,65 @@ server <- function(input, output, session) {
       }
     )
   }
+  # ---- Data by participant: raw combined / processed / binned ------------
+  observeEvent(std(), {
+    subs <- sort(unique(as.character(std()$subject)))
+    cur <- isolate(input$dl_subject)
+    updateSelectInput(session, "dl_subject", choices = c("All participants" = "", subs),
+                      selected = if (isTRUE(cur %in% subs)) cur else "")
+  })
+  observeEvent(input$dl_subject, {
+    # A single participant is always one CSV
+    if (nzchar(input$dl_subject)) updateRadioButtons(session, "dl_format", selected = "csv")
+  })
+
+  dl_data <- reactive({
+    d <- switch(input$dl_dataset,
+                raw = std(),
+                processed = if (!is.null(result())) result()$data,
+                binned = if (!is.null(result())) result()$binned)
+    if (!is.null(d) && nzchar(input$dl_subject) && "subject" %in% names(d)) {
+      d <- d[as.character(d$subject) == input$dl_subject, ]
+    }
+    d
+  })
+
+  output$dl_by_subject_note <- renderUI({
+    d <- dl_data()
+    if (is.null(d)) {
+      msg <- if (input$dl_dataset == "raw") "Load data first." else "Run the pipeline first."
+      return(div(class = "small text-warning mt-1", msg))
+    }
+    n_sub <- if ("subject" %in% names(d)) dplyr::n_distinct(d$subject) else 1
+    div(class = "small text-muted mt-1",
+        sprintf("%s rows, %d participant%s", format(nrow(d), big.mark = ","), n_sub, if (n_sub != 1) "s" else ""))
+  })
+
+  output$dl_by_subject <- downloadHandler(
+    filename = function() {
+      who <- if (nzchar(input$dl_subject)) gsub("[^A-Za-z0-9_.-]", "_", input$dl_subject) else "all"
+      ext <- if (input$dl_format == "zip" && !nzchar(input$dl_subject)) ".zip" else ".csv"
+      paste0(stamp(paste(input$dl_dataset, who, sep = "_")), ext)
+    },
+    content = function(file) {
+      d <- dl_data()
+      validate(need(!is.null(d), "Nothing to download yet."))
+      if (input$dl_format == "zip" && !nzchar(input$dl_subject) && "subject" %in% names(d)) {
+        dir <- tempfile("gazer_dl_")
+        dir.create(dir)
+        parts <- split(d, as.character(d$subject))
+        paths <- vapply(names(parts), function(sid) {
+          f <- file.path(dir, paste0(gsub("[^A-Za-z0-9_.-]", "_", sid), "_", input$dl_dataset, ".csv"))
+          data.table::fwrite(parts[[sid]], f)
+          f
+        }, character(1))
+        zip::zip(file, files = basename(paths), root = dir)
+      } else {
+        data.table::fwrite(d, file)
+      }
+    }
+  )
+
   output$dl_samples <- csv_download("samples")
   output$dl_binned <- csv_download("binned")
   output$dl_quality <- csv_download("quality")
