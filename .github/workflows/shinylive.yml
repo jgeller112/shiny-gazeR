@@ -31,14 +31,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build WebAssembly packages
+      # One package per step: resolving all three together fails in pak
+      # ("nrow(out) must equal 1"), as their Remotes overlap. Each step adds
+      # to the same repo. shinygazer is built from this commit on GitHub.
+      - name: Build saccades (wasm)
         uses: r-wasm/actions/build-rwasm@v2
         with:
-          packages: |
-            tmalsburg/saccades/saccades
-            dmirman/gazer
-            local::.
+          packages: tmalsburg/saccades/saccades
           repo-path: wasm-repo
+
+      - name: Build gazeR (wasm)
+        uses: r-wasm/actions/build-rwasm@v2
+        with:
+          packages: dmirman/gazer
+          repo-path: wasm-repo
+
+      - name: Build shinygazer (wasm)
+        uses: r-wasm/actions/build-rwasm@v2
+        with:
+          packages: jgeller112/shiny-gazeR@${{ github.sha }}
+          repo-path: wasm-repo
+
+      - name: List built packages
+        run: cat wasm-repo/bin/emscripten/contrib/*/PACKAGES
 
       - uses: actions/upload-artifact@v4
         with:
