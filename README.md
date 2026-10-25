@@ -15,12 +15,21 @@ The browser version runs entirely on your own computer through [shinylive](https
 
 ## Installation
 
+From [r-universe](https://jgeller112.r-universe.dev) (binaries for Windows and macOS, no build tools needed):
+
+```r
+install.packages("shinygazer",
+                 repos = c("https://jgeller112.r-universe.dev", "https://cloud.r-project.org"))
+```
+
+Or from GitHub:
+
 ```r
 # install.packages("remotes")
 remotes::install_github("jgeller112/shiny-gazeR")
 ```
 
-This also installs gazeR (≥ 0.2.7) from GitHub.
+Either way, gazeR (≥ 0.2.7) is installed too.
 
 ## Usage
 

@@ -1,5 +1,9 @@
 # shinygazer 0.3.1
 
+* Available from r-universe (https://jgeller112.r-universe.dev). The browser
+  version installs gazeR and shinygazer from there instead of building its
+  own WebAssembly packages.
+
 * Requires gazeR >= 0.2.7, where saccades is optional; shiny gazeR no longer
   depends on saccades at all (install and browser build).
 

@@ -1,15 +1,13 @@
 # Browser (shinylive / webR) entry point for shiny gazeR.
 #
 # Everything runs inside the visitor's browser: data are never uploaded to a
-# server. gazeR and shinygazer aren't on CRAN, so the GitHub Actions
-# workflow builds WebAssembly versions of them into this site's /repo, and
-# they are installed at start-up. Their CRAN dependencies are listed below so
-# shinylive bundles them with the site.
+# server. gazeR and shinygazer aren't on CRAN; r-universe builds them for
+# WebAssembly, and they are installed from there at start-up. Their CRAN
+# dependencies are listed below so shinylive bundles them with the site.
 #
 # To run locally instead, use shinygazer::run_app().
-# If you fork this repository, change `site_repo` to your own GitHub Pages URL.
 
-site_repo <- "https://jgeller112.github.io/shiny-gazeR/repo"
+universe <- "https://jgeller112.r-universe.dev"
 
 if (FALSE) {
   # Not run: lets shinylive detect and bundle these packages
@@ -23,7 +21,7 @@ if (FALSE) {
 # with the packages installed as usual.
 if (grepl("emscripten", R.version$os)) {
   webr::install(c("gazer", "shinygazer"),
-                repos = c(site_repo, "https://repo.r-wasm.org"))
+                repos = c(universe, "https://repo.r-wasm.org"))
 }
 
 shiny::shinyAppDir(system.file("app", package = "shinygazer"))
