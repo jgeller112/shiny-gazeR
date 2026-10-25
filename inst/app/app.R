@@ -160,7 +160,7 @@ sidebar_ui <- sidebar(
         selectInput("col_blink", info("Blink", "Optional. 1 = sample is in a blink."), NULL),
         selectInput("col_message", info("Message", "Optional. Event markers, needed for event-based baselines and time-locking."), NULL)
       ),
-      numericInput("hz", info("Sampling rate (Hz)", "Detected from the time column when data are loaded. Check it."), 250, min = 1)
+      uiOutput("rate_ui")
     ),
 
     accordion_panel(
@@ -200,12 +200,13 @@ sidebar_ui <- sidebar(
                    c(Linear = "linear", "Cubic spline" = "cubic")),
       conditionalPanel("input.interp_type == 'cubic'",
                        numericInput("maxgap", info("Max gap (ms)", "Leave blank to interpolate gaps of any length."), NA)),
+      radioButtons("step_first", "Order", inline = TRUE,
+                   c("Interpolate → smooth" = "interp", "Smooth → interpolate" = "smooth")),
+      tags$div(class = "section-label", "Filters"),
       radioButtons("filter", "Smoothing filter", inline = TRUE,
                    c("Moving average" = "moving", Hanning = "Hann")),
       conditionalPanel("input.filter == 'moving'",
                        numericInput("ma_n", "Window (samples)", 5, min = 1)),
-      radioButtons("step_first", "Order", inline = TRUE,
-                   c("Interpolate → smooth" = "interp", "Smooth → interpolate" = "smooth")),
       checkboxInput("use_lowpass", info("Low-pass filter (Butterworth)",
                                         "Removes fast fluctuations above the cutoff with a zero-phase Butterworth filter, applied per trial after interpolation and smoothing. Pupil responses are slow, so 4 Hz is a common choice. gazer::lowpass_filter()"),
                     FALSE),
@@ -639,9 +640,39 @@ server <- function(input, output, session) {
     updateSelectInput(session, "view_subject", choices = subs,
                       selected = if (isTRUE(isolate(input$view_subject) %in% subs)) isolate(input$view_subject) else subs[1])
 
-    first <- d[d$subject == d$subject[1] & d$trial == d$trial[1], ]
-    dt <- stats::median(diff(first$time), na.rm = TRUE)
-    if (is.finite(dt) && dt > 0) updateNumericInput(session, "hz", value = round(1000 / dt))
+  })
+
+  # ---- Sampling rates ----------------------------------------------------
+  # Each participant's rate: from the .asc header, or the median time step
+  detected_rates <- reactive({
+    req(std())
+    subject_rates(std())
+  })
+
+  output$rate_ui <- renderUI({
+    r <- detected_rates()
+    rates <- sort(unique(stats::na.omit(r$hz)))
+    if (length(rates) <= 1) {
+      return(numericInput("hz", info("Sampling rate (Hz)",
+                                     "Read from the file header for EyeLink .asc files, otherwise estimated from the time column. Change it only if it's wrong."),
+                          if (length(rates)) rates else NA, min = 1))
+    }
+    groups <- vapply(rates, function(hz) {
+      who <- r$subject[r$hz == hz]
+      sprintf("%g Hz: %d participant%s%s", hz, length(who), if (length(who) != 1) "s" else "",
+              if (length(who) <= 6) paste0(" (", paste(who, collapse = ", "), ")") else "")
+    }, character(1))
+    current <- isolate(input$rate_mode)
+    tagList(
+      div(class = "alert alert-warning small py-2 mb-2",
+          icon("triangle-exclamation"), tags$b(" Sampling rates differ"),
+          tags$ul(class = "mb-0 ps-3", lapply(groups, tags$li))),
+      radioButtons("rate_mode", info("Mixed sampling rates",
+                                     "Upsample: lower-rate participants get new samples in between, filled from the real samples either side (gaps such as blinks stay empty), so everyone is processed at the same rate (gazer::upsample_gaze). Own rate: each participant is processed at their own rate; time bins still line up because they're in ms."),
+                   c(stats::setNames("upsample", sprintf("Upsample to %g Hz (recommended)", max(rates))),
+                     "Use each participant's own rate" = "own"),
+                   selected = if (is.null(current)) "upsample" else current)
+    )
   })
 
   # ---- Data tab -----------------------------------------------------------
@@ -725,7 +756,9 @@ server <- function(input, output, session) {
   # ---- Run ----------------------------------------------------------------
   params <- reactive({
     list(
-      hz = input$hz, use_blink_col = input$use_blink_col,
+      hz_override = if (dplyr::n_distinct(detected_rates()$hz) <= 1) input$hz else NA,
+      rate_mode = if (is.null(input$rate_mode)) "upsample" else input$rate_mode,
+      use_blink_col = input$use_blink_col,
       acc_col = input$acc_col, acc_correct = input$acc_correct, rt_col = input$rt_col,
       rt_min = input$rt_min, rt_max = input$rt_max, rt_sd = input$rt_sd,
       pupil_min = input$pupil_min, pupil_max = input$pupil_max,
@@ -1107,7 +1140,7 @@ server <- function(input, output, session) {
   canonical_cols <- c("subject", "trial", "time", "time_zero", "pupil", "x", "y", "blink",
                       "message", "tracker_time", "source_file", "extendpupil", "pup_interp",
                       "interp", "pup", "baseline", "baselinecorrectedp", "blink_detected",
-                      "timebins", "movingavgpup", "index")
+                      "timebins", "movingavgpup", "index", ".hz", "upsampled", "sample_rate")
 
   # Columns usable as conditions: low-cardinality, not pipeline internals
   condition_choices <- reactive({
@@ -1508,6 +1541,7 @@ server <- function(input, output, session) {
       req(result())
       p <- result()$params
       p$maxgap <- if (is.infinite(p$maxgap)) NULL else p$maxgap
+      p$sampling_rates <- stats::setNames(as.list(detected_rates()$hz), detected_rates()$subject)
       out <- list(
         shinygazer_version = app_version,
         gazer_version = gazer_version,

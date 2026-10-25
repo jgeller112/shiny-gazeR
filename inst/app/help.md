@@ -44,7 +44,13 @@ If you load several files at once, they are stacked. A `source_file` column reco
 ## Settings
 
 ### 1 · Load data
-Check that each column is mapped correctly. The **sampling rate** is estimated from the first trial's time stamps. It is used to turn milliseconds into samples for blink extension and the cubic max-gap setting.
+Check that each column is mapped correctly.
+
+**Sampling rate.** Each participant's rate is read from the file header for EyeLink `.asc` files, or estimated from the median time step for other files. It's used for blink padding, noise-based blink detection, the cubic max-gap setting and the low-pass filter. If participants were recorded at different rates (e.g. some at 500 Hz instead of 1000 Hz), step 1 lists them and offers two options:
+- **Upsample to the highest rate** (recommended). Lower-rate participants get new samples in between the real ones, using `upsample_gaze()`. Each new sample's pupil and gaze values are interpolated from the real samples either side. If either neighbour is missing (a blink, tracker loss), the new sample stays missing. Event messages and the original samples are unchanged. Afterwards everyone is processed at the same rate. Upsampling assumes whole-millisecond time stamps, as EyeLink records.
+- **Use each participant's own rate.** Every step uses that participant's rate. Time bins are in ms, so results still line up across participants.
+
+The log and the parameters file record each participant's rate and which option was used.
 
 ### 2 · Blinks & artifacts
 - **Plausible range** (min/max pupil) sets out-of-range samples to missing before anything else runs, e.g. 2–9 mm for diameters in mm.

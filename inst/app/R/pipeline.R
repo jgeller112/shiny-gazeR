@@ -8,6 +8,7 @@ read_gazer_files <- function(paths, names = basename(paths), eye = "average") {
     if (grepl("\\.asc(\\.gz)?$", names[i], ignore.case = TRUE)) {
       d <- gazer::read_asc(paths[i], eye = eye,
                            subject = sub("\\.asc(\\.gz)?$", "", names[i], ignore.case = TRUE))
+      d$sample_rate <- attr(d, "asc_info")$hz
       attr(d, "asc_info") <- NULL
     } else {
       d <- data.table::fread(paths[i], na.strings = c("NA", "."), fill = TRUE)
@@ -158,6 +159,69 @@ remove_speed_outliers <- function(pupil, time, n = 16) {
   pupil
 }
 
+# Sampling rate per participant: the file header for EyeLink files
+# (`sample_rate`), otherwise estimated from the median time step.
+subject_rates <- function(d) {
+  has_col <- "sample_rate" %in% names(d)
+  out <- lapply(split(d, as.character(d$subject)), function(s) {
+    hz <- NA_real_
+    if (has_col && any(!is.na(s$sample_rate))) {
+      hz <- stats::median(s$sample_rate, na.rm = TRUE)
+    } else {
+      dt <- unlist(lapply(split(s$time, s$trial), function(t) diff(sort(t))), use.names = FALSE)
+      dt <- stats::median(dt[dt > 0], na.rm = TRUE)
+      if (is.finite(dt)) hz <- round(1000 / dt)
+    }
+    tibble::tibble(subject = as.character(s$subject[1]), hz = hz)
+  })
+  dplyr::bind_rows(out)
+}
+
+# Fill rows inserted by upsampling from the real samples either side. If
+# either neighbour is missing (blink, tracker loss), the row stays NA.
+fill_inserted <- function(v, time, inserted) {
+  ins <- which(inserted)
+  orig <- which(!inserted)
+  ok <- !inserted & !is.na(v)
+  if (!length(ins) || sum(ok) < 2) return(v)
+  k <- findInterval(ins, orig)
+  prev <- ifelse(k >= 1, orig[pmax(k, 1)], NA_integer_)
+  nxt <- ifelse(k < length(orig), orig[pmin(k + 1, length(orig))], NA_integer_)
+  est <- stats::approx(time[ok], v[ok], xout = time[ins])$y
+  est[is.na(prev) | is.na(nxt) | is.na(v[prev]) | is.na(v[nxt])] <- NA
+  v[ins] <- est
+  v
+}
+
+# Upsample participants recorded below `target_hz` with gazer::upsample_gaze()
+# (gazeR >= 0.2.6: original rows unchanged, messages not copied). The
+# inserted rows' pupil/gaze values come back empty; fill them from the real
+# samples either side.
+upsample_subjects <- function(d, rates, target_hz) {
+  `%>%` <- dplyr::`%>%`
+  low <- rates$subject[!is.na(rates$hz) & rates$hz < target_hz]
+  if (!length(low)) return(d)
+  value_cols <- intersect(c("pupil", "x", "y", "pupil_left", "pupil_right",
+                            "x_left", "y_left", "x_right", "y_right"), names(d))
+  pupil_cols <- intersect(c("pupil", "pupil_left", "pupil_right"), value_cols)
+  lo <- d[as.character(d$subject) %in% low, ]
+  up <- suppressMessages(gazer::upsample_gaze(lo, pupil_cols = pupil_cols,
+                                              gaze_cols = setdiff(value_cols, pupil_cols),
+                                              target_hz = target_hz, upsample_pupil = TRUE,
+                                              event_cols = "message"))
+  up$upsampled <- up$up_sampled
+  up$up_sampled <- NULL
+  if ("tracker_time" %in% names(up)) up$tracker_time[up$upsampled] <- NA
+  if ("sample_rate" %in% names(up)) up$sample_rate <- target_hz
+  up <- up %>%
+    dplyr::group_by(subject, trial) %>%
+    dplyr::mutate(dplyr::across(dplyr::all_of(value_cols), ~ fill_inserted(.x, time, upsampled))) %>%
+    dplyr::ungroup()
+  hi <- d[!(as.character(d$subject) %in% low), ]
+  hi$upsampled <- rep(FALSE, nrow(hi))
+  dplyr::bind_rows(hi, up) %>% dplyr::arrange(subject, trial, time)
+}
+
 # Run the full pipeline. Returns a list with the processed sample-level data,
 # the binned data, a per-trial quality table and the parameters used.
 run_pupil_pipeline <- function(data, p, log = function(...) NULL) {
@@ -174,6 +238,31 @@ run_pupil_pipeline <- function(data, p, log = function(...) NULL) {
   }
   d <- dplyr::anti_join(data, behav_excl, by = c("subject", "trial"))
   if (nrow(d) == 0) stop("All trials were removed by the behavioural exclusions.", call. = FALSE)
+
+  # 0b. Sampling rates: each participant's own, or upsample to the highest
+  rates <- subject_rates(d)
+  if (dplyr::n_distinct(rates$hz) == 1 && !is.null(p$hz_override) && isTRUE(is.finite(p$hz_override))) {
+    rates$hz <- p$hz_override
+  }
+  if (anyNA(rates$hz)) stop("Could not determine the sampling rate for: ",
+                            paste(rates$subject[is.na(rates$hz)], collapse = ", "), call. = FALSE)
+  rate_summary <- function(r) paste(sprintf("%g Hz (%d)", sort(unique(r$hz)),
+                                            as.integer(table(r$hz))), collapse = ", ")
+  if (dplyr::n_distinct(rates$hz) > 1) {
+    if (identical(p$rate_mode, "upsample")) {
+      target <- max(rates$hz)
+      low <- rates[rates$hz < target, ]
+      log("Upsampling ", paste(sprintf("%s (%g Hz)", low$subject, low$hz), collapse = ", "),
+          " to ", target, " Hz")
+      d <- upsample_subjects(d, rates, target)
+      rates$hz <- target
+    } else {
+      log("Mixed sampling rates, each participant processed at their own rate: ", rate_summary(rates))
+    }
+  } else {
+    log("Sampling rate: ", rates$hz[1], " Hz")
+  }
+  d$.hz <- rates$hz[match(as.character(d$subject), rates$subject)]
 
   # 1. Mark blinks / invalid samples as missing
   d$pupil[!is.na(d$pupil) & d$pupil <= 0] <- NA
@@ -198,7 +287,7 @@ run_pupil_pipeline <- function(data, p, log = function(...) NULL) {
       dplyr::group_by(subject, trial) %>%
       dplyr::mutate(blink_detected = pmax(
         blink_detected,
-        as.integer(gazer::detect_blinks_noise(pupil, hz = p$hz, smooth_ms = p$hershman_smooth,
+        as.integer(gazer::detect_blinks_noise(pupil, hz = .hz[1], smooth_ms = p$hershman_smooth,
                                               gap_ms = p$hershman_gap) > 0))) %>%
       dplyr::ungroup()
   }
@@ -213,7 +302,7 @@ run_pupil_pipeline <- function(data, p, log = function(...) NULL) {
     dplyr::group_by(subject, trial) %>%
     dplyr::mutate(extendpupil = gazer::extend_blinks(pupil, fillback = p$fillback,
                                                      fillforward = p$fillforward,
-                                                     hz = p$hz)) %>%
+                                                     hz = .hz[1])) %>%
     dplyr::ungroup()
 
   # 3. Dilation-speed artifact rejection
@@ -290,35 +379,38 @@ run_pupil_pipeline <- function(data, p, log = function(...) NULL) {
   # 5. Interpolate + smooth
   log("Interpolating (", p$interp_type, ") and smoothing (", p$filter, ", ",
       p$step_first, " first)")
-  d <- suppressWarnings(suppressMessages(
-    gazer::smooth_interpolate_pupil(d, pupil = "pupil", extendpupil = "extendpupil",
-                                    extendblinks = TRUE, step.first = p$step_first,
-                                    filter = p$filter, maxgap = p$maxgap,
-                                    type = p$interp_type, hz = p$hz, n = p$ma_n)
-  ))
-  d <- dplyr::as_tibble(d)
+  # hz only sets the cubic max-gap length, so run once per sampling rate
+  d <- dplyr::bind_rows(lapply(split(d, d$.hz), function(di) {
+    suppressWarnings(suppressMessages(
+      gazer::smooth_interpolate_pupil(di, pupil = "pupil", extendpupil = "extendpupil",
+                                      extendblinks = TRUE, step.first = p$step_first,
+                                      filter = p$filter, maxgap = p$maxgap,
+                                      type = p$interp_type, hz = di$.hz[1], n = p$ma_n)
+    ))
+  }))
+  d <- dplyr::arrange(dplyr::as_tibble(d), subject, trial, time)
 
   # 5b. Optional low-pass filter: zero-phase Butterworth (gazer::lowpass_filter),
   # per trial. It can't handle NAs, so it runs after interpolation.
   if (isTRUE(p$use_lowpass)) {
-    nyquist <- p$hz / 2
+    nyquist <- min(d$.hz) / 2
     if (is.null(p$lp_cutoff) || !is.finite(p$lp_cutoff) || p$lp_cutoff <= 0 || p$lp_cutoff >= nyquist) {
       stop("Low-pass cutoff must be above 0 and below half the sampling rate (", nyquist, " Hz).",
            call. = FALSE)
     }
     log("Low-pass filtering at ", p$lp_cutoff, " Hz (Butterworth, order ", p$lp_order, ", zero-phase)")
     skipped <- 0L
-    lp <- function(x) {
+    lp <- function(x, hz) {
       if (anyNA(x) || length(x) <= 3 * (p$lp_order + 1)) {
         skipped <<- skipped + 1L
         return(x)
       }
       suppressMessages(gazer::lowpass_filter(x, order = p$lp_order, filter_to_use = p$lp_cutoff,
-                                             samplerate = p$hz))
+                                             samplerate = hz))
     }
     d <- d %>%
       dplyr::group_by(subject, trial) %>%
-      dplyr::mutate(pup_interp = lp(pup_interp)) %>%
+      dplyr::mutate(pup_interp = lp(pup_interp, .hz[1])) %>%
       dplyr::ungroup()
     if (skipped) log("Low-pass: ", skipped, " trial(s) left unfiltered (missing values or too short)")
   }
@@ -376,7 +468,7 @@ run_pupil_pipeline <- function(data, p, log = function(...) NULL) {
 
   log("Done: ", n_trials(d), " trials retained")
   list(data = d, binned = binned, quality = quality, cleaned = cleaned,
-       timevar = timevar, params = p)
+       timevar = timevar, params = p, rates = rates)
 }
 
 # ---- Summaries for plotting ---------------------------------------------

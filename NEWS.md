@@ -1,3 +1,14 @@
+# shinygazer 0.3.0
+
+* Each participant's own sampling rate is used: read from the file header for
+  EyeLink `.asc` files, otherwise estimated from the time stamps. If rates
+  differ (e.g. some participants recorded at 500 Hz), step 1 lists them and
+  offers to upsample everyone to the highest rate with
+  `gazer::upsample_gaze()` (recommended), or to process each participant at
+  their own rate. Requires gazeR >= 0.2.6.
+* Download raw combined, processed or binned data for all participants or
+  one, as a single CSV or one CSV per participant (Export and Data tabs).
+
 # shinygazer 0.2.0
 
 * The app can run in the browser with shinylive. A GitHub Actions workflow
