@@ -1,7 +1,8 @@
 ^.*\.Rproj$
-^\.Rproj\.user$
-^README\.md$
-^man/figures$
-^\.github$
 ^\.claude$
+^\.github$
+^\.Rproj\.user$
 ^LICENSE\.md$
+^man/figures$
+^README\.md$
+^shinylive-app$

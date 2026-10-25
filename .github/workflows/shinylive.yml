@@ -1,0 +1,81 @@
+# Build shiny gazeR for the browser (shinylive / webR) and deploy it to
+# GitHub Pages.
+#
+# 1. build-wasm: WebAssembly builds of the packages that aren't on CRAN
+#    (saccades, gazeR, shinygazer), as a CRAN-like repo served at /repo.
+# 2. deploy: shinylive export of shinylive-app/ (bundling the CRAN packages),
+#    plus the repo from step 1, published to GitHub Pages.
+#
+# One-time setup: Settings > Pages > Build and deployment > Source:
+# "GitHub Actions".
+
+name: shinylive
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build-wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build WebAssembly packages
+        uses: r-wasm/actions/build-rwasm@v2
+        with:
+          packages: |
+            tmalsburg/saccades/saccades
+            dmirman/gazer
+            local::.
+          repo-path: wasm-repo
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wasm-repo
+          path: wasm-repo
+
+  deploy:
+    needs: build-wasm
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          use-public-rspm: true
+
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          extra-packages: |
+            any::shinylive
+            local::.
+
+      - name: Export app with shinylive
+        shell: Rscript {0}
+        run: shinylive::export("shinylive-app", "_site")
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: wasm-repo
+          path: _site/repo
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -7,6 +7,12 @@ Pupil pre-processing for eye-tracking data, without writing code.
 inspect every trial, and export analysis-ready data. Every setting is saved with your results,
 so the same pipeline can be re-run in R with gazeR.
 
+## Try it in your browser
+
+**https://jgeller112.github.io/shiny-gazeR/**
+
+The browser version runs entirely on your own computer through [shinylive](https://posit-dev.github.io/r-shinylive/) and WebAssembly: nothing is installed, and your data are never uploaded to a server. The first visit takes a minute or so while R and the packages download; later visits are faster. Large files process more slowly than in desktop R, so for big studies install the package below.
+
 ## Installation
 
 ```r

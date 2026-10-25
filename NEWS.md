@@ -1,5 +1,9 @@
 # shinygazer 0.2.0
 
+* The app can run in the browser with shinylive. A GitHub Actions workflow
+  builds WebAssembly versions of saccades, gazeR and shinygazer and deploys
+  the app to GitHub Pages.
+
 * Requires gazeR >= 0.2.5, which now includes `read_asc()` and fixes to
   `smooth_interpolate_pupil()` (cubic + interpolate-first + Hanning) and
   `lowpass_filter()` (edge artifacts). The copies and workarounds bundled in
