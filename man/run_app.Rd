@@ -19,7 +19,7 @@ without writing code:
 }
 \details{
 \enumerate{
-\item \strong{Load} EyeLink \code{.asc} files (\code{\link[=read_asc]{read_asc()}}), SR Research Data Viewer
+\item \strong{Load} EyeLink \code{.asc} files (\code{\link[gazer:read_asc]{gazer::read_asc()}}), SR Research Data Viewer
 sample reports, Tobii (Titta) exports (\code{\link[gazer:merge_tobii_titta]{gazer::merge_tobii_titta()}}),
 Pupil Labs Neon exports (\code{\link[gazer:parse_pl]{gazer::parse_pl()}}) or any long CSV, and map
 the columns.
@@ -27,7 +27,8 @@ the columns.
 detection (\code{\link[gazer:detect_blinks_noise]{gazer::detect_blinks_noise()}}), blink padding
 (\code{\link[gazer:extend_blinks]{gazer::extend_blinks()}}) and dilation-speed outliers
 (\code{\link[gazer:speed_pupil]{gazer::speed_pupil()}}, \code{\link[gazer:calc_mad]{gazer::calc_mad()}}).
-\item \strong{Interpolate and smooth} (\code{\link[gazer:smooth_interpolate_pupil]{gazer::smooth_interpolate_pupil()}}).
+\item \strong{Interpolate and smooth} (\code{\link[gazer:smooth_interpolate_pupil]{gazer::smooth_interpolate_pupil()}}),
+optionally low-pass filter (\code{\link[gazer:lowpass_filter]{gazer::lowpass_filter()}}).
 \item \strong{Baseline-correct and time-lock}
 (\code{\link[gazer:baseline_correction_pupil_msg]{gazer::baseline_correction_pupil_msg()}}, \code{\link[gazer:onset_pupil]{gazer::onset_pupil()}}).
 \item \strong{Bin} (\code{\link[gazer:downsample_gaze]{gazer::downsample_gaze()}}), optionally join behavioural data

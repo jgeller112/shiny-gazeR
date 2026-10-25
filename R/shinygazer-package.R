@@ -1,5 +1,4 @@
 #' @keywords internal
-#' @importFrom data.table := .I .N .SD
 "_PACKAGE"
 
 # Packages used only inside the app (inst/app); listed here so R CMD check
@@ -13,7 +12,12 @@
 #' @importFrom dplyr mutate
 #' @importFrom gazer extend_blinks
 #' @importFrom stats median
-#' @importFrom signal butter
+#' @importFrom data.table fread
+#' @importFrom tibble as_tibble
+#' @importFrom utils head
 NULL
 
-utils::globalVariables(c("trial", "time", "value", "name", "row_id", "text"))
+
+#' @importFrom gazer read_asc
+#' @export
+gazer::read_asc

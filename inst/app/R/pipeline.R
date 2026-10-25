@@ -2,11 +2,11 @@
 # Kept free of Shiny code so it can be called (and tested) from plain R.
 
 # Read one or more files and stack them. EyeLink .asc files go through
-# shinygazer::read_asc(); everything else is read as a delimited gazeR-style file.
+# gazer::read_asc(); everything else is read as a delimited gazeR-style file.
 read_gazer_files <- function(paths, names = basename(paths), eye = "average") {
   dfs <- lapply(seq_along(paths), function(i) {
     if (grepl("\\.asc(\\.gz)?$", names[i], ignore.case = TRUE)) {
-      d <- shinygazer::read_asc(paths[i], eye = eye,
+      d <- gazer::read_asc(paths[i], eye = eye,
                            subject = sub("\\.asc(\\.gz)?$", "", names[i], ignore.case = TRUE))
       attr(d, "asc_info") <- NULL
     } else {
@@ -158,22 +158,6 @@ remove_speed_outliers <- function(pupil, time, n = 16) {
   pupil
 }
 
-# Zero-phase Butterworth low-pass filter. signal::filtfilt() (which
-# gazer::lowpass_filter() uses) pads with zeros, which drags both ends of each
-# trial towards 0. Remove the mean and pad by odd reflection first, then trim
-# and add the mean back.
-lowpass_padded <- function(x, order, cutoff, hz) {
-  bf <- signal::butter(order, cutoff / (hz / 2), type = "low")
-  n <- length(x)
-  pad <- min(n - 1, ceiling(3 * hz / cutoff))
-  m <- mean(x)
-  y <- x - m
-  front <- 2 * y[1] - rev(y[2:(pad + 1)])
-  back <- 2 * y[n] - rev(y[(n - pad):(n - 1)])
-  z <- signal::filtfilt(bf, c(front, y, back))
-  z[(pad + 1):(pad + n)] + m
-}
-
 # Run the full pipeline. Returns a list with the processed sample-level data,
 # the binned data, a per-trial quality table and the parameters used.
 run_pupil_pipeline <- function(data, p, log = function(...) NULL) {
@@ -306,32 +290,16 @@ run_pupil_pipeline <- function(data, p, log = function(...) NULL) {
   # 5. Interpolate + smooth
   log("Interpolating (", p$interp_type, ") and smoothing (", p$filter, ", ",
       p$step_first, " first)")
-  if (p$interp_type == "cubic" && p$step_first == "interp" && p$filter == "Hann") {
-    # Released gazeR (<= 0.2.4) smooths the un-interpolated signal in this
-    # branch of smooth_interpolate_pupil(); do it correctly here until the
-    # fix is in gazeR.
-    maxgap <- if (is.finite(p$maxgap)) round(p$maxgap / (1000 / p$hz)) else Inf
-    d <- d %>%
-      dplyr::group_by(subject, trial) %>%
-      dplyr::mutate(index = ifelse(is.na(extendpupil), NA, dplyr::row_number()),
-                    index = zoo::na.approx(index, na.rm = FALSE, rule = 2),
-                    interp = zoo::na.spline(extendpupil, na.rm = FALSE, x = index, maxgap = maxgap),
-                    interp = zoo::na.locf(interp, na.rm = FALSE, fromLast = TRUE),
-                    interp = zoo::na.locf(interp, na.rm = FALSE)) %>%
-      dplyr::ungroup() %>%
-      dplyr::mutate(pup_interp = gazer::hanning_filter(interp, degree = 11))
-  } else {
-    d <- suppressWarnings(suppressMessages(
-      gazer::smooth_interpolate_pupil(d, pupil = "pupil", extendpupil = "extendpupil",
-                                      extendblinks = TRUE, step.first = p$step_first,
-                                      filter = p$filter, maxgap = p$maxgap,
-                                      type = p$interp_type, hz = p$hz, n = p$ma_n)
-    ))
-  }
+  d <- suppressWarnings(suppressMessages(
+    gazer::smooth_interpolate_pupil(d, pupil = "pupil", extendpupil = "extendpupil",
+                                    extendblinks = TRUE, step.first = p$step_first,
+                                    filter = p$filter, maxgap = p$maxgap,
+                                    type = p$interp_type, hz = p$hz, n = p$ma_n)
+  ))
   d <- dplyr::as_tibble(d)
 
-  # 5b. Optional low-pass filter: zero-phase Butterworth, per trial. It can't
-  # handle NAs, so it runs after interpolation.
+  # 5b. Optional low-pass filter: zero-phase Butterworth (gazer::lowpass_filter),
+  # per trial. It can't handle NAs, so it runs after interpolation.
   if (isTRUE(p$use_lowpass)) {
     nyquist <- p$hz / 2
     if (is.null(p$lp_cutoff) || !is.finite(p$lp_cutoff) || p$lp_cutoff <= 0 || p$lp_cutoff >= nyquist) {
@@ -345,7 +313,8 @@ run_pupil_pipeline <- function(data, p, log = function(...) NULL) {
         skipped <<- skipped + 1L
         return(x)
       }
-      lowpass_padded(x, order = p$lp_order, cutoff = p$lp_cutoff, hz = p$hz)
+      suppressMessages(gazer::lowpass_filter(x, order = p$lp_order, filter_to_use = p$lp_cutoff,
+                                             samplerate = p$hz))
     }
     d <- d %>%
       dplyr::group_by(subject, trial) %>%

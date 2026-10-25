@@ -4,17 +4,16 @@ export(read_asc)
 export(run_app)
 importFrom(DT,datatable)
 importFrom(bslib,page_sidebar)
-importFrom(data.table,
-  ":=",
-  .I,
-  .N,
-  .SD
-)
+importFrom(data.table,fread)
 importFrom(dplyr,mutate)
-importFrom(gazer,extend_blinks)
+importFrom(gazer,
+  extend_blinks,
+  read_asc
+)
 importFrom(jsonlite,write_json)
 importFrom(markdown,mark_html)
 importFrom(plotly,plot_ly)
-importFrom(signal,butter)
 importFrom(stats,median)
+importFrom(tibble,as_tibble)
+importFrom(utils,head)
 importFrom(zoo,na.approx)

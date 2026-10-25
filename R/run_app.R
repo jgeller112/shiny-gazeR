@@ -3,7 +3,7 @@
 #' Opens an interactive app that runs gazeR's pupil pre-processing pipeline
 #' without writing code:
 #'
-#' 1. **Load** EyeLink `.asc` files ([read_asc()]), SR Research Data Viewer
+#' 1. **Load** EyeLink `.asc` files ([gazer::read_asc()]), SR Research Data Viewer
 #'    sample reports, Tobii (Titta) exports ([gazer::merge_tobii_titta()]),
 #'    Pupil Labs Neon exports ([gazer::parse_pl()]) or any long CSV, and map
 #'    the columns.
@@ -11,7 +11,8 @@
 #'    detection ([gazer::detect_blinks_noise()]), blink padding
 #'    ([gazer::extend_blinks()]) and dilation-speed outliers
 #'    ([gazer::speed_pupil()], [gazer::calc_mad()]).
-#' 3. **Interpolate and smooth** ([gazer::smooth_interpolate_pupil()]).
+#' 3. **Interpolate and smooth** ([gazer::smooth_interpolate_pupil()]),
+#'    optionally low-pass filter ([gazer::lowpass_filter()]).
 #' 4. **Baseline-correct and time-lock**
 #'    ([gazer::baseline_correction_pupil_msg()], [gazer::onset_pupil()]).
 #' 5. **Bin** ([gazer::downsample_gaze()]), optionally join behavioural data

@@ -14,7 +14,7 @@ so the same pipeline can be re-run in R with gazeR.
 remotes::install_github("jgeller112/shiny-gazeR")
 ```
 
-This also installs gazeR (and its `saccades` dependency) from GitHub.
+This also installs gazeR (≥ 0.2.5) and its `saccades` dependency from GitHub.
 
 ## Usage
 
@@ -28,15 +28,13 @@ Choose **Try the example data** on the home page to look around before loading y
 
 | Step | Options | gazeR function(s) |
 |---|---|---|
-| **Load** | EyeLink `.asc`, SR Data Viewer sample reports, Tobii (Titta), Pupil Labs Neon (`.zip` of the Pupil Cloud export), or any long CSV; monocular or binocular (left, right, average or both) | `read_asc()`*, `merge_tobii_titta()`, `parse_pl()` |
+| **Load** | EyeLink `.asc`, SR Data Viewer sample reports, Tobii (Titta), Pupil Labs Neon (`.zip` of the Pupil Cloud export), or any long CSV; monocular or binocular (left, right, average or both) | `read_asc()`, `merge_tobii_titta()`, `parse_pl()` |
 | **Behaviour** | Join a per-trial table (RT, accuracy, …); exclude incorrect trials, RT cutoffs, ± k SD within subject | — |
 | **Blinks & artifacts** | Plausible pupil range; tracker or noise-based blinks (Hershman et al., 2018); blink padding; dilation-speed outliers | `detect_blinks_noise()`, `extend_blinks()`, `speed_pupil()`, `calc_mad()` |
 | **Missing data** | Exclude trials and subjects above a threshold, measured inside the analysis window | — |
-| **Interpolate & smooth** | Linear or cubic; moving average or Hanning; either order; optional zero-phase Butterworth low-pass | `smooth_interpolate_pupil()` |
+| **Interpolate & smooth** | Linear or cubic; moving average or Hanning; either order; optional zero-phase Butterworth low-pass | `smooth_interpolate_pupil()`, `lowpass_filter()` |
 | **Baseline & time-lock** | Subtractive or divisive; from an event or a fixed window; align trials to any message | `baseline_correction_pupil_msg()`, `baseline_correction_pupil()`, `onset_pupil()` |
 | **Bin** | Any combination of subject, trial and condition columns | `downsample_gaze()` |
-
-\* `read_asc()` is bundled with shiny gazeR until it is part of a gazeR release.
 
 **Inspect and report**
 
@@ -50,11 +48,11 @@ Choose **Try the example data** on the home page to look around before loading y
 
 ## Reading `.asc` files
 
-`read_asc()` turns an EyeLink `.asc` file into gazeR's long format. It runs in seconds and needs no
+gazeR's `read_asc()` (gazeR ≥ 0.2.5) turns an EyeLink `.asc` file into gazeR's long format. It runs in seconds and needs no
 SR Research software; convert `.edf` files with SR Research's free `edf2asc` first.
 
 ```r
-d <- shinygazer::read_asc("data/sub01.asc", eye = "left")
+d <- gazer::read_asc("data/sub01.asc", eye = "left")
 attr(d, "asc_info")$hz
 ```
 

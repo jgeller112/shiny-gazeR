@@ -6,13 +6,13 @@ Steps run in this order (functions are from gazeR unless noted):
 
 | Step | What happens | gazeR function(s) |
 |---|---|---|
-| Load | Read and stack the files (`shinygazer::read_asc()` for `.asc`); rename columns to `subject`, `trial`, `time`, `pupil`, `blink`, `message` | `data.table::fread()`, as in `make_gazer()` |
+| Load | Read and stack the files (`read_asc()` for `.asc`); rename columns to `subject`, `trial`, `time`, `pupil`, `blink`, `message` | `data.table::fread()`, as in `make_gazer()` |
 | Behaviour | Trials are excluded by accuracy and RT (optional) before any processing | — |
 | Blinks | Pupil values ≤ 0 and blink samples become `NA` (tracker blinks, or noise-based detection); gaps are padded back and forward | `detect_blinks_noise()`, `extend_blinks()` |
 | Artifacts | Samples with implausibly fast dilation are removed | `speed_pupil()`, `calc_mad()` |
 | Exclusion | Trials and subjects with too much missing data are dropped | (same logic as `count_missing_pupil()`) |
 | Interpolate & smooth | Gaps are filled, then the trace is smoothed, or the reverse | `smooth_interpolate_pupil()` |
-| Low-pass (optional) | Zero-phase Butterworth filter per trial, with edge padding | `signal::butter()`, `signal::filtfilt()` |
+| Low-pass (optional) | Zero-phase Butterworth filter per trial | `lowpass_filter()` |
 | Baseline | Median pupil size in the baseline period is subtracted or divided out | `baseline_correction_pupil_msg()`, `baseline_correction_pupil()` |
 | Time-lock | Time 0 is set to an event's onset, and the trial is trimmed to a window | `onset_pupil()` |
 | Bin | Samples are averaged into time bins within your grouping columns | `downsample_gaze(type = "pupil")` |
@@ -56,7 +56,7 @@ Check that each column is mapped correctly. The **sampling rate** is estimated f
 ### 3 · Interpolate & smooth
 - **Linear** interpolation is the safer default. **Cubic spline** (Mathôt et al., 2018) gives smoother curves but can overshoot across long gaps; use *Max gap* to limit it.
 - **Moving average** uses a centred window of *n* samples. **Hanning** uses an 11-point Hann window.
-- **Low-pass filter** (optional) removes fluctuations faster than the cutoff with a zero-phase Butterworth filter (`signal::filtfilt`, so there's no time shift). Each trial is mean-centred and padded by reflection before filtering, to avoid the edge artifacts `filtfilt`'s zero-padding causes. It runs per trial after interpolation and smoothing, because it can't handle missing values. Trials that still have gaps (e.g. from a cubic *Max gap*) are left unfiltered, and the log says how many. 4 Hz is a common cutoff for pupil data, and the cutoff must be below half the sampling rate.
+- **Low-pass filter** (optional) removes fluctuations faster than the cutoff with a zero-phase Butterworth filter (`lowpass_filter()`, so there's no time shift; each trial is mean-centred and reflection-padded so its ends aren't distorted). It runs per trial after interpolation and smoothing, because it can't handle missing values. Trials that still have gaps (e.g. from a cubic *Max gap*) are left unfiltered, and the log says how many. 4 Hz is a common cutoff for pupil data, and the cutoff must be below half the sampling rate.
 
 ### 4 · Baseline & time-lock
 - **Before an event**: the median of the *N* ms before the chosen message, per trial.

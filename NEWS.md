@@ -1,9 +1,12 @@
-# shinygazer 0.1.0.9000
+# shinygazer 0.2.0
 
-* Optional low-pass filter (zero-phase Butterworth) in step 3, applied per
-  trial after interpolation. Trials are mean-centred and reflection-padded
-  first, avoiding the edge artifacts of `gazer::lowpass_filter()`, which
-  zero-pads.
+* Requires gazeR >= 0.2.5, which now includes `read_asc()` and fixes to
+  `smooth_interpolate_pupil()` (cubic + interpolate-first + Hanning) and
+  `lowpass_filter()` (edge artifacts). The copies and workarounds bundled in
+  shinygazer 0.1.0 have been removed; `shinygazer::read_asc()` is now a
+  re-export of `gazer::read_asc()`.
+* Optional low-pass filter (zero-phase Butterworth, `gazer::lowpass_filter()`)
+  in step 3, applied per trial after interpolation.
 
 # shinygazer 0.1.0
 
