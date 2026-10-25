@@ -147,7 +147,7 @@ sidebar_ui <- sidebar(
                        ),
                        checkboxInput("pl_aoi", info("Use surface (AOI) data", "Reads gaze_surface.csv from the Marker Mapper enrichment and adds gaze_detected_on_surface plus normalised surface x/y."), FALSE)),
       conditionalPanel("['auto', 'eyelink', 'tobii'].indexOf(input.tracker) >= 0",
-                       radioButtons("asc_eye", info("Eye (binocular)", "Average: mean of both eyes where both are valid. Both: keeps pupil_left / pupil_right (and x, y per eye) alongside the average, so you can map either eye below. Changing this re-reads the files."),
+                       radioButtons("asc_eye", info("Eye (binocular)", "Average: pupil, x and y are the mean of both eyes, only where both are valid; blink is 1 if either eye is blinking. Both: also keeps pupil_left / pupil_right, x/y and blink_left / blink_right for each eye, so you can map one eye below (use its matching blink column). Changing this re-reads the files."),
                                     c(Average = "average", Left = "left", Right = "right", Both = "both"), inline = TRUE)),
       actionLink("load_example", tagList(icon("flask"), "Try the example data")),
       tags$div(class = "section-label", "Column mapping"),
@@ -190,7 +190,7 @@ sidebar_ui <- sidebar(
       conditionalPanel("input.use_mad",
                        numericInput("mad_n", "MAD multiplier (k)", 16, min = 1)),
       sliderInput("missingthresh", info("Exclusion threshold",
-                                        "Trials, and whole subjects, with at least this proportion of missing samples are removed before interpolation."),
+                                        "Excludes any trial with MORE than this proportion of samples missing, and any participant with more than this proportion missing across all their trials (pooled). Measured after blink removal and padding, inside the analysis window when trials are time-locked."),
                   min = 0, max = 1, value = 0.2, step = 0.05)
     ),
 
@@ -200,17 +200,17 @@ sidebar_ui <- sidebar(
                    c(Linear = "linear", "Cubic spline" = "cubic")),
       conditionalPanel("input.interp_type == 'cubic'",
                        numericInput("maxgap", info("Max gap (ms)", "Leave blank to interpolate gaps of any length."), NA)),
-      radioButtons("step_first", "Order", inline = TRUE,
-                   c("Interpolate → smooth" = "interp", "Smooth → interpolate" = "smooth")),
-      tags$div(class = "section-label", "Filters"),
-      radioButtons("filter", "Smoothing filter", inline = TRUE,
-                   c("Moving average" = "moving", Hanning = "Hann")),
+      tags$div(class = "section-label", "Filter"),
+      radioButtons("filter", info("Smoothing filter",
+                                  "Choose one. Moving average: mean of a centred window of samples. Hanning: 11-point Hann window. Low-pass: zero-phase Butterworth filter that removes fluctuations faster than the cutoff (gazer::lowpass_filter); it needs gap-free data, so it runs after interpolation. None: interpolation only."),
+                   c("Moving average" = "moving", "Hanning" = "Hann",
+                     "Low-pass (Butterworth)" = "lowpass", "None" = "none")),
       conditionalPanel("input.filter == 'moving'",
                        numericInput("ma_n", "Window (samples)", 5, min = 1)),
-      checkboxInput("use_lowpass", info("Low-pass filter (Butterworth)",
-                                        "Removes fast fluctuations above the cutoff with a zero-phase Butterworth filter, applied per trial after interpolation and smoothing. Pupil responses are slow, so 4 Hz is a common choice. gazer::lowpass_filter()"),
-                    FALSE),
-      conditionalPanel("input.use_lowpass",
+      conditionalPanel("input.filter == 'moving' || input.filter == 'Hann'",
+                       radioButtons("step_first", "Order", inline = TRUE,
+                                    c("Interpolate → smooth" = "interp", "Smooth → interpolate" = "smooth"))),
+      conditionalPanel("input.filter == 'lowpass'",
                        layout_columns(
                          col_widths = c(6, 6), gap = "0.5rem",
                          numericInput("lp_cutoff", info("Cutoff (Hz)", "Must be below half the sampling rate."), 4, min = 0.1, step = 0.5),
@@ -225,7 +225,8 @@ sidebar_ui <- sidebar(
       conditionalPanel("input.baseline == 'event'",
                        layout_columns(
                          col_widths = c(7, 5), gap = "0.5rem",
-                         selectInput("baseline_event", "Event", NULL),
+                         selectizeInput("baseline_event", info("Event(s)", "Pick one or more. Each trial uses the first of these events it contains, e.g. LONG_TRIAL_START or SHORT_TRIAL_START."),
+                                        NULL, multiple = TRUE, options = list(plugins = list("remove_button"))),
                          numericInput("baseline_dur", "ms before", 100, min = 1)
                        )),
       conditionalPanel("input.baseline == 'window'",
@@ -240,7 +241,8 @@ sidebar_ui <- sidebar(
       tags$div(class = "section-label", "Time-locking"),
       checkboxInput("timelock", info("Align trials to an event", "Sets time 0 to the event onset. gazeR::onset_pupil()"), TRUE),
       conditionalPanel("input.timelock",
-                       selectInput("timelock_event", "Event", NULL),
+                       selectizeInput("timelock_event", info("Event(s)", "Pick one or more. Each trial is aligned to the first of these events it contains, so trials that start with different messages (e.g. LONG_TRIAL_START or SHORT_TRIAL_START) are all kept. Trials with none of them are excluded."),
+                                      NULL, multiple = TRUE, options = list(plugins = list("remove_button"))),
                        layout_columns(
                          col_widths = c(6, 6), gap = "0.5rem",
                          numericInput("win_start", "Keep from (ms)", -100),
@@ -324,6 +326,7 @@ ui <- page_sidebar(
       tagList(icon("table"), "Data"), value = "data",
       uiOutput("data_summary"),
       uiOutput("raw_download_ui"),
+      uiOutput("eye_ui"),
       uiOutput("events_ui"),
       div(class = "d-flex align-items-center gap-3 mt-2",
           h6(class = "mb-0", "Samples"),
@@ -385,7 +388,8 @@ ui <- page_sidebar(
           downloadButton("dl_samples", "Processed samples (.csv)", class = "btn-outline-primary mb-2"),
           downloadButton("dl_binned", "Binned data (.csv)", class = "btn-outline-primary mb-2"),
           downloadButton("dl_quality", "Trial quality (.csv)", class = "btn-outline-primary mb-2"),
-          downloadButton("dl_params", "Parameters (.json)", class = "btn-outline-primary")
+          downloadButton("dl_params", "Parameters (.json)", class = "btn-outline-primary mb-2"),
+          downloadButton("dl_dictionary", "Data dictionary (.csv)", class = "btn-outline-primary")
         ),
         card(card_header("Processing log"), verbatimTextOutput("log"))
       )
@@ -601,15 +605,19 @@ server <- function(input, output, session) {
     if ("message" %in% names(d)) {
       msgs <- names(sort(table(d$message), decreasing = TRUE))
       pick <- function(cur) {
-        if (!is.null(cur) && cur %in% msgs) return(cur)
+        cur <- intersect(cur, msgs)
+        if (length(cur)) return(cur)
         if ("target" %in% msgs) return("target")
-        # Prefer something that marks a start/onset over e.g. *_END
+        # Every start/onset-type event (e.g. LONG_TRIAL_START and
+        # SHORT_TRIAL_START), not *_END
         starts <- msgs[grepl("start|onset|stim", msgs, ignore.case = TRUE) &
                          !grepl("end|offset", msgs, ignore.case = TRUE)]
-        if (length(starts)) starts[1] else msgs[1]
+        if (length(starts)) starts else msgs[1]
       }
-      updateSelectInput(session, "baseline_event", choices = msgs, selected = pick(input$baseline_event))
-      updateSelectInput(session, "timelock_event", choices = msgs, selected = pick(input$timelock_event))
+      updateSelectizeInput(session, "baseline_event", choices = msgs,
+                           selected = pick(isolate(input$baseline_event)))
+      updateSelectizeInput(session, "timelock_event", choices = msgs,
+                           selected = pick(isolate(input$timelock_event)))
     }
     canon <- c("subject", "trial", "time", "pupil", "blink", "message", "source_file")
     cand <- setdiff(names(d), canon)
@@ -708,6 +716,41 @@ server <- function(input, output, session) {
   })
   observeEvent(input$load_example_2, load_example())
 
+  # Missing data and blinks per participant and eye, from the data as loaded
+  eye_stats <- reactive({
+    req(std())
+    label <- if (input$tracker %in% c("auto", "eyelink", "tobii") && !is.null(input$asc_eye) &&
+                 input$asc_eye %in% c("left", "right", "average")) {
+      c(left = "left", right = "right", average = "average (both eyes)")[[input$asc_eye]]
+    } else "pupil"
+    eye_summary(std(), single_label = label)
+  })
+
+  eye_datatable <- function() {
+    e <- eye_stats()
+    DT::datatable(e, rownames = FALSE, filter = "top",
+                  colnames = c("Subject", "Eye", "Samples", "Missing", "Blink",
+                               "Missing outside blinks", "Trials", "Trials >50% missing"),
+                  options = list(pageLength = 10, dom = "tip", scrollX = TRUE)) |>
+      DT::formatPercentage(c("missing", "blink", "tracker_loss"), 1) |>
+      DT::formatStyle("missing", target = "row",
+                      backgroundColor = DT::styleInterval(0.3, c("transparent", "rgba(240,140,0,.28)")))
+  }
+  output$eye_table <- DT::renderDT(eye_datatable())
+  output$eye_table_quality <- DT::renderDT(eye_datatable())
+
+  output$eye_ui <- renderUI({
+    req(std())
+    card(class = "mt-3",
+         card_header(tagList(icon("eye"), "Missing data and blinks by eye"),
+                     tags$small(class = "text-muted ms-2",
+                                "rows over 30% missing are highlighted")),
+         p(class = "small text-muted mb-2",
+           "Average (both eyes) is missing whenever either eye is, and its blink is 1 if either eye blinks. ",
+           "If one eye is much worse, choose the other eye in step 1."),
+         DT::DTOutput("eye_table"))
+  })
+
   # Event messages are sparse (one sample per event), so summarise them
   # separately rather than relying on the sample preview.
   output$events_ui <- renderUI({
@@ -769,7 +812,7 @@ server <- function(input, output, session) {
       missingthresh = input$missingthresh,
       interp_type = input$interp_type, filter = input$filter, step_first = input$step_first,
       maxgap = if (is.na(input$maxgap)) Inf else input$maxgap, ma_n = input$ma_n,
-      use_lowpass = input$use_lowpass, lp_cutoff = input$lp_cutoff, lp_order = input$lp_order,
+      use_lowpass = identical(input$filter, "lowpass"), lp_cutoff = input$lp_cutoff, lp_order = input$lp_order,
       baseline = input$baseline, baseline_event = input$baseline_event,
       baseline_dur = input$baseline_dur, baseline_window = c(input$bw_start, input$bw_end),
       baseline_method = input$baseline_method,
@@ -1076,7 +1119,9 @@ server <- function(input, output, session) {
         card(card_header("Trial table"), DT::DTOutput("quality_table"))
       ),
       card(card_header(tagList(icon("users"), "By subject")),
-           DT::DTOutput("subject_quality_table"))
+           DT::DTOutput("subject_quality_table")),
+      card(card_header(tagList(icon("eye"), "Missing data and blinks by eye (as loaded)")),
+           DT::DTOutput("eye_table_quality"))
     )
   })
 
@@ -1140,7 +1185,7 @@ server <- function(input, output, session) {
   canonical_cols <- c("subject", "trial", "time", "time_zero", "pupil", "x", "y", "blink",
                       "message", "tracker_time", "source_file", "extendpupil", "pup_interp",
                       "interp", "pup", "baseline", "baselinecorrectedp", "blink_detected",
-                      "timebins", "movingavgpup", "index", ".hz", "upsampled", "sample_rate")
+                      "timebins", "movingavgpup", "index", ".hz", "processing_hz", "upsampled", "sample_rate")
 
   # Columns usable as conditions: low-cardinality, not pipeline internals
   condition_choices <- reactive({
@@ -1247,7 +1292,7 @@ server <- function(input, output, session) {
 
   x_label <- reactive({
     p <- result()$params
-    if (result()$timevar == "time_zero") paste0("Time from '", p$timelock_event, "' (ms)") else "Time (ms)"
+    if (result()$timevar == "time_zero") paste0("Time from ", event_label(p$timelock_event), " (ms)") else "Time (ms)"
   })
 
   cond_colours <- reactive({
@@ -1506,7 +1551,9 @@ server <- function(input, output, session) {
         data.table::fwrite(parts[[sid]], f)
         f
       }, character(1))
-      zip::zip(file, files = basename(paths), root = dir)
+      dict <- file.path(dir, "data_dictionary.csv")
+      data.table::fwrite(data_dictionary(stats::setNames(list(d), label)), dict)
+      zip::zip(file, files = c(basename(paths), "data_dictionary.csv"), root = dir)
     } else {
       data.table::fwrite(d, file)
     }
@@ -1529,6 +1576,19 @@ server <- function(input, output, session) {
   output$dl_raw_zip <- downloadHandler(
     filename = function() paste0(stamp("raw_all"), ".zip"),
     content = function(file) write_dataset(std(), file, "raw", per_subject = TRUE)
+  )
+
+  # Every column of every dataset available now, with a description
+  output$dl_dictionary <- downloadHandler(
+    filename = function() paste0(stamp("data_dictionary"), ".csv"),
+    content = function(file) {
+      res <- result()
+      sets <- list(raw = std())
+      if (!is.null(res)) {
+        sets <- c(sets, list(processed = res$data, binned = res$binned, quality = res$quality))
+      }
+      data.table::fwrite(data_dictionary(sets), file)
+    }
   )
 
   output$dl_samples <- csv_download("samples")

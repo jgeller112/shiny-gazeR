@@ -222,6 +222,29 @@ upsample_subjects <- function(d, rates, target_hz) {
   dplyr::bind_rows(hi, up) %>% dplyr::arrange(subject, trial, time)
 }
 
+# TRUE where a sample's message is one of `events`. A sample can carry several
+# messages joined with "; ".
+has_event <- function(message, events) {
+  out <- rep(FALSE, length(message))
+  idx <- which(!is.na(message))
+  if (length(idx)) {
+    out[idx] <- vapply(strsplit(message[idx], "; ", fixed = TRUE),
+                       function(m) any(m %in% events), logical(1))
+  }
+  out
+}
+
+# Time relative to the first of `events` in the trial (NA if none occurs).
+# Lets one setting cover trials that start with different events, e.g.
+# LONG_TRIAL_START or SHORT_TRIAL_START.
+event_onset <- function(time, message, events) {
+  hit <- which(has_event(message, events))
+  if (!length(hit)) return(rep(NA_real_, length(time)))
+  time - time[hit[1]]
+}
+
+event_label <- function(events) paste0("'", paste(events, collapse = "' or '"), "'")
+
 # Run the full pipeline. Returns a list with the processed sample-level data,
 # the binned data, a per-trial quality table and the parameters used.
 run_pupil_pipeline <- function(data, p, log = function(...) NULL) {
@@ -326,7 +349,7 @@ run_pupil_pipeline <- function(data, p, log = function(...) NULL) {
   if (use_window) {
     tz <- d %>%
       dplyr::group_by(subject, trial) %>%
-      dplyr::mutate(.tz = gazer::onset_pupil(time, message, event = p$timelock_event)) %>%
+      dplyr::mutate(.tz = event_onset(time, message, p$timelock_event)) %>%
       dplyr::pull(.tz)
     lo <- if (is.na(p$window[1])) -Inf else p$window[1]
     hi <- if (is.na(p$window[2])) Inf else p$window[2]
@@ -338,22 +361,27 @@ run_pupil_pipeline <- function(data, p, log = function(...) NULL) {
     dplyr::mutate(.in = in_window, .ev = has_event) %>%
     dplyr::group_by(subject, trial) %>%
     dplyr::summarise(samples = sum(.in),
-                     prop_missing = mean(is.na(extendpupil[.in])),
+                     missing_n = sum(is.na(extendpupil[.in])),
+                     prop_missing = missing_n / samples,
                      valid_total = sum(!is.na(extendpupil)),
                      has_event = any(.ev),
                      .groups = "drop") %>%
     dplyr::group_by(subject) %>%
-    # Subject average only over trials that will be analysed
-    dplyr::mutate(subject_prop_missing = if (any(has_event)) mean(prop_missing[has_event]) else NA_real_) %>%
+    # Participant level: missing samples pooled across all their analysable
+    # trials (as in gazer::count_missing_pupil()), not the mean of trial %s
+    dplyr::mutate(subject_prop_missing = if (any(has_event))
+                    sum(missing_n[has_event]) / sum(samples[has_event]) else NA_real_) %>%
     dplyr::ungroup() %>%
+    # Excluded when MORE than the threshold is missing. A participant over the
+    # threshold loses every trial, so that reason comes first.
     dplyr::mutate(reason = dplyr::case_when(
-      !has_event ~ paste0("no '", p$timelock_event, "' event"),
+      !has_event ~ paste0("no ", event_label(p$timelock_event), " event"),
+      subject_prop_missing > p$missingthresh ~ "subject missing data",
       valid_total < 2 ~ "no valid samples",
-      prop_missing >= p$missingthresh ~ "trial missing data",
-      subject_prop_missing >= p$missingthresh ~ "subject missing data",
+      prop_missing > p$missingthresh ~ "trial missing data",
       TRUE ~ "kept"),
       excluded = reason != "kept") %>%
-    dplyr::select(-valid_total, -has_event)
+    dplyr::select(-valid_total, -has_event, -missing_n)
   keep <- dplyr::filter(quality, !excluded) %>% dplyr::select(subject, trial)
   # Report behaviourally excluded trials in the same table
   if (nrow(behav_excl)) {
@@ -365,27 +393,37 @@ run_pupil_pipeline <- function(data, p, log = function(...) NULL) {
   }
   for (r in setdiff(unique(quality$reason), c("kept", unique(behav_excl$reason)))) {
     log("Excluding ", sum(quality$reason == r), " of ", nrow(quality), " trials: ", r,
-        if (grepl("missing", r)) paste0(" (>= ", p$missingthresh * 100, "%",
+        if (grepl("missing", r)) paste0(" (> ", p$missingthresh * 100, "%",
                                         if (use_window) " in the analysis window" else "", ")") else "")
   }
   d <- dplyr::semi_join(d, keep, by = c("subject", "trial"))
   if (nrow(d) == 0) {
-    stop(sprintf(paste0("All trials were excluded (median %.0f%% missing per trial, threshold %.0f%%). ",
+    stop(sprintf(paste0("All trials were excluded (median %.0f%% missing per trial; trials or participants with more than %.0f%% missing are excluded). ",
                         "Raise the exclusion threshold, check the time-lock event, or pick a single eye ",
                         "instead of the average."),
                  100 * stats::median(quality$prop_missing), 100 * p$missingthresh), call. = FALSE)
   }
 
-  # 5. Interpolate + smooth
-  log("Interpolating (", p$interp_type, ") and smoothing (", p$filter, ", ",
-      p$step_first, " first)")
+  # 5. Interpolate + smooth. One smoothing filter: moving average or Hanning
+  # (via smooth_interpolate_pupil), or low-pass / none. For the latter,
+  # interpolate only (a 1-sample moving average leaves values unchanged);
+  # the low-pass filter runs in step 5b.
+  interp_only <- p$filter %in% c("lowpass", "none")
+  if (interp_only) {
+    log("Interpolating (", p$interp_type, "), no moving-average/Hanning smoothing")
+  } else {
+    log("Interpolating (", p$interp_type, ") and smoothing (", p$filter, ", ",
+        p$step_first, " first)")
+  }
   # hz only sets the cubic max-gap length, so run once per sampling rate
   d <- dplyr::bind_rows(lapply(split(d, d$.hz), function(di) {
     suppressWarnings(suppressMessages(
       gazer::smooth_interpolate_pupil(di, pupil = "pupil", extendpupil = "extendpupil",
-                                      extendblinks = TRUE, step.first = p$step_first,
-                                      filter = p$filter, maxgap = p$maxgap,
-                                      type = p$interp_type, hz = di$.hz[1], n = p$ma_n)
+                                      extendblinks = TRUE,
+                                      step.first = if (interp_only) "interp" else p$step_first,
+                                      filter = if (interp_only) "moving" else p$filter,
+                                      maxgap = p$maxgap, type = p$interp_type, hz = di$.hz[1],
+                                      n = if (interp_only) 1 else p$ma_n)
     ))
   }))
   d <- dplyr::arrange(dplyr::as_tibble(d), subject, trial, time)
@@ -419,14 +457,27 @@ run_pupil_pipeline <- function(data, p, log = function(...) NULL) {
   value_col <- "pup_interp"
   if (p$baseline == "event") {
     if (!"message" %in% names(d)) stop("Event-based baseline needs a message column.", call. = FALSE)
-    log("Baseline: median of ", p$baseline_dur, " ms before '", p$baseline_event,
-        "' (", p$baseline_method, ")")
+    log("Baseline: median of ", p$baseline_dur, " ms before ", event_label(p$baseline_event),
+        " (", p$baseline_method, ")")
+    # Mark the first selected event in each trial, so gazeR's function sees
+    # exactly one baseline event per trial, then restore the messages
+    d <- d %>%
+      dplyr::group_by(subject, trial) %>%
+      dplyr::mutate(.orig_message = message,
+                    message = {
+                      h <- has_event(message, p$baseline_event)
+                      ifelse(h & cumsum(h) == 1, ".BASELINE_EVENT", NA_character_)
+                    }) %>%
+      dplyr::ungroup()
     d <- suppressMessages(
       gazer::baseline_correction_pupil_msg(d, pupil_colname = "pup_interp",
                                            baseline_dur = p$baseline_dur,
-                                           event = p$baseline_event,
+                                           event = ".BASELINE_EVENT",
                                            baseline_method = p$baseline_method)
     )
+    d$message <- d$.orig_message
+    d$.orig_message <- NULL
+    d$event_offset_time <- NULL
     value_col <- "baselinecorrectedp"
   } else if (p$baseline == "window") {
     log("Baseline: median of ", p$baseline_window[1], "-", p$baseline_window[2],
@@ -444,15 +495,15 @@ run_pupil_pipeline <- function(data, p, log = function(...) NULL) {
   # 7. Time-lock to an event
   timevar <- "time"
   if (isTRUE(p$timelock) && "message" %in% names(d)) {
-    log("Time-locking to '", p$timelock_event, "'")
+    log("Time-locking to ", event_label(p$timelock_event))
     d <- d %>%
       dplyr::group_by(subject, trial) %>%
-      dplyr::mutate(time_zero = gazer::onset_pupil(time, message, event = p$timelock_event)) %>%
+      dplyr::mutate(time_zero = event_onset(time, message, p$timelock_event)) %>%
       dplyr::ungroup()
     n_before <- n_trials(d)
     d <- dplyr::filter(d, !is.na(time_zero))
     if (n_trials(d) < n_before) {
-      log("Dropped ", n_before - n_trials(d), " trial(s) without '", p$timelock_event, "'")
+      log("Dropped ", n_before - n_trials(d), " trial(s) without ", event_label(p$timelock_event))
     }
     if (!is.na(p$window[1])) d <- dplyr::filter(d, time_zero >= p$window[1])
     if (!is.na(p$window[2])) d <- dplyr::filter(d, time_zero <= p$window[2])
@@ -467,6 +518,9 @@ run_pupil_pipeline <- function(data, p, log = function(...) NULL) {
                                    pupil = "baselinecorrectedp")
 
   log("Done: ", n_trials(d), " trials retained")
+  # Name the per-participant rate clearly in the output
+  names(d)[names(d) == ".hz"] <- "processing_hz"
+  names(cleaned)[names(cleaned) == ".hz"] <- "processing_hz"
   list(data = d, binned = binned, quality = quality, cleaned = cleaned,
        timevar = timevar, params = p, rates = rates)
 }
@@ -625,4 +679,114 @@ behaviour_exclusions <- function(data, p) {
     }
   }
   tr[!is.na(tr$reason), c("subject", "trial", "reason")]
+}
+
+# ---- Data dictionary ----------------------------------------------------
+
+# Descriptions of the columns the app writes. Columns not listed here came
+# from the user's own files (trial variables, behavioural or tracker columns).
+column_descriptions <- c(
+  subject = "Participant label (file name without extension for EyeLink files, or your subject column).",
+  trial = "Trial number. For EyeLink files, one per TRIALID message.",
+  time = "Time in ms from the start of recording in the trial (EyeLink: the !MODE RECORD message).",
+  pupil = "Pupil size in tracker units (EyeLink: area or diameter). NA when missing. Binocular 'Average'/'Both': the mean of both eyes, only where both are valid.",
+  x = "Horizontal gaze position (screen pixels; Tobii: 0-1 display area). Binocular 'Average'/'Both': mean of both eyes.",
+  y = "Vertical gaze position (screen pixels; Tobii: 0-1 display area). Binocular 'Average'/'Both': mean of both eyes.",
+  blink = "1 during a blink flagged by the tracker, 0 otherwise. Binocular 'Average'/'Both': 1 if either eye is in a blink.",
+  message = "Event message(s) on this sample (first sample at or after the message; Experiment Builder offsets applied). NA otherwise.",
+  tracker_time = "The eye tracker's own clock (ms). NA on samples added by upsampling.",
+  pupil_left = "Left-eye pupil size (binocular 'Both' only).",
+  pupil_right = "Right-eye pupil size (binocular 'Both' only).",
+  x_left = "Left-eye horizontal gaze position (binocular 'Both' only).",
+  y_left = "Left-eye vertical gaze position (binocular 'Both' only).",
+  x_right = "Right-eye horizontal gaze position (binocular 'Both' only).",
+  y_right = "Right-eye vertical gaze position (binocular 'Both' only).",
+  blink_left = "1 while the left eye is in a blink (binocular 'Both' only).",
+  blink_right = "1 while the right eye is in a blink (binocular 'Both' only).",
+  sample_rate = "Sampling rate in Hz as recorded (EyeLink file header). After upsampling, the new rate.",
+  source_file = "Name of the file the row came from.",
+  sr_trial_time = "SR Data Viewer sample reports: TIMESTAMP - IP_START_TIME (ms).",
+  event_label = "Tobii (Titta): text after the onset prefix of the trial's onset message.",
+  upsampled = "TRUE for samples added by upsampling (values interpolated from the real samples either side), FALSE for recorded samples.",
+  processing_hz = "Sampling rate (Hz) used to process this participant.",
+  blink_detected = "1 if the sample was removed as a blink (tracker blinks and/or noise-based detection), before padding.",
+  extendpupil = "Pupil after removing blinks (with padding), out-of-range values and dilation-speed outliers. NA = removed or missing.",
+  pup = "Pupil with blink samples set to NA (intermediate step of smooth_interpolate_pupil()).",
+  interp = "Pupil after interpolation, before smoothing (when interpolating first).",
+  index = "Sample index used for cubic-spline interpolation.",
+  pup_interp = "Pupil after interpolation and smoothing (and low-pass filtering, if used).",
+  baseline = "Baseline pupil size for the trial (median in the baseline period). For divisive correction with a fixed window: per participant.",
+  baselinecorrectedp = "Baseline-corrected pupil: pup_interp - baseline (subtractive) or (pup_interp - baseline) / baseline (divisive).",
+  time_zero = "Time in ms relative to the time-lock event (0 = event onset).",
+  timebins = "Start of the time bin (ms); samples are averaged within each bin.",
+  aggbaseline = "Mean baseline-corrected pupil in the time bin.",
+  samples = "Number of samples in the trial (inside the analysis window when time-locked).",
+  prop_missing = "Proportion of samples missing after blink and artifact removal (inside the analysis window when time-locked).",
+  subject_prop_missing = "Proportion of the participant's samples missing, pooled across all their analysable trials (inside the analysis window when time-locked).",
+  reason = "Why the trial was excluded, or 'kept'.",
+  excluded = "TRUE if the trial was excluded from processing.",
+  condition = "Plot condition: the selected condition columns joined with ' · '.",
+  mean = "Mean across units (subjects, or trials for a single subject).",
+  n = "Number of units contributing to the mean.",
+  se = "Standard error (within-subject Cousineau-Morey or between-subject, as chosen).",
+  half = "Half-width of the plotted band (SE or 95% CI).",
+  lower = "Lower edge of the plotted band.",
+  upper = "Upper edge of the plotted band.",
+  error_type = "Which error the band shows.",
+  unit = "Unit of analysis (subject, or subject_trial for a single subject).",
+  value = "Mean baseline-corrected pupil in the chosen time window."
+)
+
+# One row per column of each dataset: dataset, column, type, description.
+data_dictionary <- function(datasets) {
+  rows <- lapply(names(datasets), function(nm) {
+    d <- datasets[[nm]]
+    if (is.null(d)) return(NULL)
+    cols <- names(d)
+    desc <- unname(column_descriptions[cols])
+    desc[is.na(desc)] <- "From your data file (e.g. an Experiment Builder trial variable, a behavioural column, or a tracker export column)."
+    tibble::tibble(dataset = nm, column = cols,
+                   type = vapply(d, function(v) class(v)[1], character(1)),
+                   description = desc)
+  })
+  dplyr::bind_rows(rows)
+}
+
+# ---- Missing data and blinks by eye -------------------------------------
+
+# Per participant and eye: % of samples missing, % in a blink, % missing
+# outside blinks (tracker loss), and trials that are mostly missing. With
+# both eyes loaded, left, right and their average are reported separately;
+# otherwise the single pupil column is labelled `single_label`.
+eye_summary <- function(d, single_label = "pupil") {
+  `%>%` <- dplyr::`%>%`
+  eyes <- if (all(c("pupil_left", "pupil_right") %in% names(d))) {
+    list(left = c("pupil_left", "blink_left"), right = c("pupil_right", "blink_right"),
+         `average (both eyes)` = c("pupil", "blink"))
+  } else {
+    stats::setNames(list(c("pupil", "blink")), single_label)
+  }
+  rows <- lapply(names(eyes), function(eye) {
+    pcol <- eyes[[eye]][1]
+    bcol <- eyes[[eye]][2]
+    p <- suppressWarnings(as.numeric(d[[pcol]]))
+    tibble::tibble(
+      subject = d$subject, trial = d$trial,
+      miss = is.na(p) | p <= 0,
+      blink = if (bcol %in% names(d)) !is.na(d[[bcol]]) & d[[bcol]] > 0 else NA
+    ) %>%
+      dplyr::group_by(subject, trial) %>%
+      dplyr::summarise(n = dplyr::n(), miss_n = sum(miss), blink_n = sum(blink),
+                       loss_n = sum(miss & !blink), .groups = "drop") %>%
+      dplyr::group_by(subject) %>%
+      dplyr::summarise(eye = eye,
+                       samples = sum(n),
+                       missing = sum(miss_n) / sum(n),
+                       blink = sum(blink_n) / sum(n),
+                       tracker_loss = sum(loss_n) / sum(n),
+                       trials = dplyr::n(),
+                       trials_mostly_missing = sum(miss_n / n > 0.5),
+                       .groups = "drop")
+  })
+  dplyr::bind_rows(rows) %>% dplyr::arrange(subject, eye)
 }

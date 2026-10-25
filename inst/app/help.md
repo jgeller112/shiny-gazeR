@@ -12,7 +12,7 @@ Steps run in this order (functions are from gazeR unless noted):
 | Artifacts | Samples with implausibly fast dilation are removed | `speed_pupil()`, `calc_mad()` |
 | Exclusion | Trials and subjects with too much missing data are dropped | (same logic as `count_missing_pupil()`) |
 | Interpolate & smooth | Gaps are filled, then the trace is smoothed, or the reverse | `smooth_interpolate_pupil()` |
-| Low-pass (optional) | Zero-phase Butterworth filter per trial | `lowpass_filter()` |
+| Low-pass | Zero-phase Butterworth filter per trial, if chosen as the smoothing filter | `lowpass_filter()` |
 | Baseline | Median pupil size in the baseline period is subtracted or divided out | `baseline_correction_pupil_msg()`, `baseline_correction_pupil()` |
 | Time-lock | Time 0 is set to an event's onset, and the trial is trimmed to a window | `onset_pupil()` |
 | Bin | Samples are averaged into time bins within your grouping columns | `downsample_gaze(type = "pupil")` |
@@ -35,11 +35,21 @@ For Tobii, invalid samples (validity flag false) are set to missing, and gaze is
 
 In more detail:
 
-- **EyeLink `.asc` files** (convert `.edf` with SR Research's `edf2asc`). These are read with `read_asc()`. Trials run from `TRIALID` to `TRIAL_RESULT`, and time 0 is the start of recording in each trial. Blinks come from the tracker's blink events. Event messages go in the `message` column, and Experiment Builder `TRIAL_VAR`s (your conditions) become columns. For binocular recordings, choose the left eye, the right eye, their average, or **Both**. Both keeps `pupil_left`, `pupil_right` (and x, y, blink per eye) next to the average, so you can map either eye in the column settings.
+- **EyeLink `.asc` files** (convert `.edf` with SR Research's `edf2asc`). These are read with `read_asc()`. Trials run from `TRIALID` to `TRIAL_RESULT`, and time 0 is the start of recording in each trial. Blinks come from the tracker's blink events. Event messages go in the `message` column, and Experiment Builder `TRIAL_VAR`s (your conditions) become columns. For binocular recordings, choose the left eye, the right eye, their average, or **Both**. With **Average** and **Both**, `pupil` (and `x`, `y`) is the **average of both eyes**, computed only where both are valid, and `blink` is 1 if **either** eye is blinking. **Both** also keeps `pupil_left`, `pupil_right`, x/y and `blink_left`, `blink_right` for each eye, so you can map one eye in the column settings. If you do, map its matching blink column too (e.g. `pupil_left` with `blink_left`).
 - **gazeR-format files** (csv, tsv, or space-delimited text) like the example data. These include files written by `parse_asc()`.
 - **SR Research Data Viewer sample reports** (`.xls` tab-delimited text). The app adds a `sr_trial_time` column (`TIMESTAMP − IP_START_TIME`) for the time mapping. Missing values coded as `.` are read as `NA`.
 
 If you load several files at once, they are stacked. A `source_file` column records where each row came from.
+
+### Missing data and blinks by eye
+The Data tab (and the Quality tab) shows, for each participant, how much of the recording is missing, as loaded and before any cleaning:
+
+- **Missing:** samples with no valid pupil value.
+- **Blink:** samples inside a tracker-flagged blink.
+- **Missing outside blinks:** tracker loss (e.g. the eye wasn't found).
+- **Trials >50% missing:** trials that are mostly missing.
+
+With **Both**, there are separate rows for the left eye, the right eye and their average. The average is missing whenever either eye is, and its blink is 1 if either eye blinks. With **Left**, **Right** or **Average**, there is one row for that choice. If one eye is much worse than the other (e.g. lost for whole trials), reload with the better eye.
 
 ## Settings
 
@@ -57,18 +67,28 @@ The log and the parameters file record each participant's rate and which option 
 - **Blink detection.** *Tracker* uses the blinks the eye tracker flagged: EyeLink `SBLINK`/`EBLINK` events, or your blink column. *Noise-based* (Hershman, Henik & Cohen, 2018) starts from each run of missing samples and walks outward along the smoothed pupil signal. It marks the whole blink, including the eyelid closing and reopening that trackers miss, so it needs little or no extra padding (try 0–50 ms). If *Also treat tracker blink samples as missing* is ticked, both sets of blinks are removed. Detected blinks are shaded red in the trial viewer.
 - **Extend back/forward** pads every gap, not only labelled blinks, because the pupil edge is unreliable just before and after a blink. 100 ms each way is a common default.
 - **Dilation-speed outliers** (Kret & Sjak-Shie, 2019): for each sample, the larger of the backward and forward absolute speed is computed. Samples faster than *median + k × MAD* within the trial are removed. A larger *k* removes fewer samples.
-- **Exclusion threshold** is applied after blinks and artifacts are removed. A trial is dropped if its own missing proportion reaches the threshold, or if its subject's average does. When trials are time-locked, only samples inside the analysis window count, so long rest or inter-trial periods don't get trials excluded.
+- **Exclusion threshold** (e.g. 40%) is applied after blinks and artifacts are removed, at two levels:
+  - **Participant:** if more than 40% of all the participant's samples are missing, pooled across their trials, the participant is excluded and every trial is marked *subject missing data*.
+  - **Trial:** otherwise, any trial with more than 40% of its samples missing is excluded (*trial missing data*).
+
+  When trials are time-locked, only samples inside the analysis window count at both levels, so long rest or inter-trial periods don't get trials excluded. The per-eye table on the Data tab, by contrast, counts the whole recording.
 
 ### 3 · Interpolate & smooth
 - **Linear** interpolation is the safer default. **Cubic spline** (Mathôt et al., 2018) gives smoother curves but can overshoot across long gaps; use *Max gap* to limit it.
-- **Moving average** uses a centred window of *n* samples. **Hanning** uses an 11-point Hann window.
-- **Low-pass filter** (optional) removes fluctuations faster than the cutoff with a zero-phase Butterworth filter (`lowpass_filter()`, so there's no time shift; each trial is mean-centred and reflection-padded so its ends aren't distorted). It runs per trial after interpolation and smoothing, because it can't handle missing values. Trials that still have gaps (e.g. from a cubic *Max gap*) are left unfiltered, and the log says how many. 4 Hz is a common cutoff for pupil data, and the cutoff must be below half the sampling rate.
+- **Smoothing filter: choose one.**
+  - **Moving average:** a centred window of *n* samples.
+  - **Hanning:** an 11-point Hann window.
+  - **Low-pass (Butterworth):** a zero-phase filter (`lowpass_filter()`, so there's no time shift) that removes fluctuations faster than the cutoff. Each trial is mean-centred and reflection-padded so its ends aren't distorted. It needs gap-free data, so it always runs after interpolation; trials that still have gaps (e.g. from a cubic *Max gap*) are left unfiltered, and the log says how many. 4 Hz is a common cutoff for pupil data, and the cutoff must be below half the sampling rate.
+  - **None:** interpolation only.
+
+  *Order* (interpolate first or smooth first) applies to moving average and Hanning.
 
 ### 4 · Baseline & time-lock
 - **Before an event**: the median of the *N* ms before the chosen message, per trial.
 - **Fixed window**: the median between two time stamps, per trial for subtractive correction. Divisive correction with a fixed window uses a per-subject baseline.
 - **Subtractive** gives change in tracker units; **divisive** gives proportional change. Mathôt et al. (2018) recommend subtractive.
-- **Time-locking** drops trials where the event is missing. Each trial must contain the event exactly once.
+- **Events:** the baseline and time-lock settings each accept **one or more** events. Each trial uses the first selected event it contains, so tasks whose trials start with different messages (e.g. `LONG_TRIAL_START` and `SHORT_TRIAL_START`) keep all their trials. The app pre-selects every start/onset-type event it finds.
+- **Time-locking** drops trials that contain none of the selected events. The Quality tab gives the reason.
 
 ### 5 · Bin & group
 **Group by** sets the columns that bins are averaged within. Time bin is always included. Common choices:
@@ -121,6 +141,71 @@ The *Plotted values* table and download contain exactly what is drawn.
 - **Raw combined:** the data as loaded, one row per sample, with event messages, trial variables and any behavioural columns joined, before any cleaning. For EyeLink files this is what `read_asc()` returns.
 - **Processed samples:** after the full pipeline.
 - **Binned:** the Group-by table.
+
+## Data dictionary
+
+**Data dictionary (.csv)** on the Export tab lists every column of the data you have loaded or processed, with its type and meaning. Every per-participant `.zip` also includes `data_dictionary.csv`. Columns not listed below come from your own files: Experiment Builder trial variables, behavioural columns, or other tracker columns.
+
+### Raw combined data
+One row per sample, as loaded. No cleaning has been applied.
+
+| Column | Meaning |
+|---|---|
+| `subject` | Participant label (file name without extension for EyeLink files) |
+| `trial` | Trial number (one per `TRIALID` for EyeLink files) |
+| `time` | ms from the start of recording in the trial |
+| `pupil` | Pupil size in tracker units (EyeLink: area or diameter); `NA` = missing. **Average/Both: mean of both eyes, only where both are valid** |
+| `x`, `y` | Gaze position (pixels; Tobii: 0–1). Average/Both: mean of both eyes |
+| `blink` | 1 during a tracker-flagged blink. **Average/Both: 1 if either eye is blinking** |
+| `message` | Event message(s) on this sample, offsets applied; `NA` otherwise |
+| `tracker_time` | The tracker's own clock (ms) |
+| `pupil_left`, `pupil_right`, `x_left`, `y_left`, `x_right`, `y_right` | Each eye separately (Both only) |
+| `blink_left`, `blink_right` | 1 while that eye is blinking (Both only) |
+| `sample_rate` | Recorded sampling rate (Hz), from the EyeLink file header |
+| `source_file` | File the row came from |
+| *trial variables* | One column per Experiment Builder `TRIAL_VAR` (e.g. `condition`) |
+
+### Processed samples
+The raw columns for retained trials, plus:
+
+| Column | Meaning |
+|---|---|
+| `upsampled` | `TRUE` for samples added by upsampling |
+| `processing_hz` | Sampling rate used for this participant (Hz) |
+| `blink_detected` | 1 if removed as a blink, before padding |
+| `extendpupil` | Pupil after removing blinks (padded), out-of-range values and speed outliers |
+| `interp` | Pupil after interpolation, before smoothing (interpolate-first only) |
+| `pup_interp` | Pupil after interpolation, smoothing and low-pass filtering |
+| `baseline` | Baseline pupil size (median in the baseline period) |
+| `baselinecorrectedp` | `pup_interp − baseline` (subtractive) or `(pup_interp − baseline) / baseline` (divisive) |
+| `time_zero` | ms from the time-lock event |
+
+### Binned data
+| Column | Meaning |
+|---|---|
+| *Group-by columns* | e.g. `subject`, `trial`, condition |
+| `timebins` | Start of the time bin (ms) |
+| `aggbaseline` | Mean baseline-corrected pupil in the bin |
+
+### Trial quality
+| Column | Meaning |
+|---|---|
+| `subject`, `trial` | Trial identity |
+| `samples` | Samples in the trial (inside the analysis window when time-locked) |
+| `prop_missing` | Proportion of the trial's samples missing after blink and artifact removal (inside the analysis window when time-locked) |
+| `subject_prop_missing` | Proportion of the participant's samples missing, pooled across trials (inside the analysis window when time-locked) |
+| `reason` | Why the trial was excluded, or `kept` |
+| `excluded` | `TRUE` if excluded |
+
+### Plotted values (Results tab)
+| Column | Meaning |
+|---|---|
+| `condition` | The plot's condition columns, joined with ` · ` |
+| `timebins` | Time bin (ms), time course only |
+| `mean`, `n` | Mean across units and how many units contribute |
+| `se`, `half`, `lower`, `upper` | Standard error, half-width of the band (SE or 95% CI) and its edges |
+| `error_type` | Which error the band shows |
+| `unit`, `value` | Raincloud / behaviour plots: the unit and its mean pupil in the window |
 
 ## Citing
 
