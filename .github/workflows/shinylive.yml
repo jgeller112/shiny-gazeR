@@ -1,12 +1,15 @@
 # Build shiny gazeR for the browser (shinylive / webR) and deploy it to
 # GitHub Pages.
 #
-# gazeR and shinygazer are built for WebAssembly by r-universe
-# (https://jgeller112.r-universe.dev); the app installs them from there when
-# it starts. This workflow only exports shinylive-app/ (bundling the CRAN
-# packages) and publishes it. It follows posit-dev/r-shinylive's deploy-app
-# workflow (GitHub version of shinylive), but exports shinylive-app/ rather
-# than the repo root, since this repo is an R package.
+# gazeR and shinygazer are installed from r-universe
+# (https://jgeller112.r-universe.dev), which also builds them for
+# WebAssembly. shinylive bundles packages from r-universe (but not packages
+# installed straight from GitHub, which need wasm builds attached to a GitHub
+# release), so the exported site contains everything the app needs.
+#
+# Based on posit-dev/r-shinylive's deploy-app workflow (GitHub version of
+# shinylive), exporting shinylive-app/ rather than the repo root since this
+# repo is an R package.
 #
 # One-time setup: Settings > Pages > Build and deployment > Source:
 # "GitHub Actions".
@@ -44,10 +47,16 @@ jobs:
 
       - uses: r-lib/actions/setup-r-dependencies@v2
         with:
-          extra-packages: |
+          packages: |
             github::posit-dev/r-shinylive
             any::sessioninfo
-            local::.
+
+      - name: Install gazeR and shinygazer from r-universe
+        shell: Rscript {0}
+        run: |
+          install.packages(c("gazer", "shinygazer"),
+                           repos = c("https://jgeller112.r-universe.dev", getOption("repos")))
+          sessioninfo::package_info(c("gazer", "shinygazer"), dependencies = FALSE)
 
       - name: Export app with shinylive
         shell: Rscript {0}
