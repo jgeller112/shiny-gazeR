@@ -2,7 +2,7 @@
 # GitHub Pages.
 #
 # 1. build-wasm: WebAssembly builds of the packages that aren't on CRAN
-#    (saccades, gazeR, shinygazer), as a CRAN-like repo served at /repo.
+#    (gazeR, shinygazer), as a CRAN-like repo served at /repo.
 # 2. deploy: shinylive export of shinylive-app/ (bundling the CRAN packages),
 #    plus the repo from step 1, published to GitHub Pages.
 #
@@ -34,17 +34,8 @@ jobs:
       # The build container can't use this workflow's GitHub token, so
       # GitHub package lookups inside it fail. Clone the non-CRAN packages
       # with git and build everything from local folders instead.
-      - name: Fetch saccades and gazeR sources
-        run: |
-          git clone --depth 1 https://github.com/tmalsburg/saccades.git _deps/saccades
-          git clone --depth 1 https://github.com/dmirman/gazer.git _deps/gazer
-
-      - name: Build saccades (wasm)
-        uses: r-wasm/actions/build-rwasm@v2
-        with:
-          packages: local::_deps/saccades/saccades
-          repo-path: wasm-repo
-          image-path: _images
+      - name: Fetch gazeR source
+        run: git clone --depth 1 https://github.com/dmirman/gazer.git _deps/gazer
 
       - name: Build gazeR (wasm)
         uses: r-wasm/actions/build-rwasm@v2

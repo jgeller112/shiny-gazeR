@@ -1,3 +1,8 @@
+# shinygazer 0.3.1
+
+* Requires gazeR >= 0.2.7, where saccades is optional; shiny gazeR no longer
+  depends on saccades at all (install and browser build).
+
 # shinygazer 0.3.0
 
 * Each participant's own sampling rate is used: read from the file header for

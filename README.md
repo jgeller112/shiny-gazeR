@@ -20,7 +20,7 @@ The browser version runs entirely on your own computer through [shinylive](https
 remotes::install_github("jgeller112/shiny-gazeR")
 ```
 
-This also installs gazeR (≥ 0.2.5) and its `saccades` dependency from GitHub.
+This also installs gazeR (≥ 0.2.7) from GitHub.
 
 ## Usage
 
