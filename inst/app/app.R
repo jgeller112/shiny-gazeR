@@ -379,6 +379,10 @@ ui <- page_sidebar(
               uiOutput("dl_by_subject_note"))
         )
       ),
+      card(
+        card_header(tagList(icon("file-pen"), "Methods paragraph for your paper")),
+        uiOutput("methods_ui")
+      ),
       layout_columns(
         col_widths = c(4, 8),
         card(
@@ -1184,7 +1188,7 @@ server <- function(input, output, session) {
 
   canonical_cols <- c("subject", "trial", "time", "time_zero", "pupil", "x", "y", "blink",
                       "message", "tracker_time", "source_file", "extendpupil", "pup_interp",
-                      "interp", "pup", "baseline", "baselinecorrectedp", "blink_detected",
+                      "interp", "pup", "baseline", "baselinecorrectedp", "blink_detected", "eyes_recorded",
                       "timebins", "movingavgpup", "index", ".hz", "processing_hz", "upsampled", "sample_rate")
 
   # Columns usable as conditions: low-cardinality, not pipeline internals
@@ -1588,6 +1592,60 @@ server <- function(input, output, session) {
         sets <- c(sets, list(processed = res$data, binned = res$binned, quality = res$quality))
       }
       data.table::fwrite(data_dictionary(sets), file)
+    }
+  )
+
+  # ---- Methods paragraph ---------------------------------------------------
+  methods_meta <- reactive({
+    files <- if (!is.null(input$files)) input$files$name else character()
+    tracker <- switch(input$tracker,
+      eyelink = "an SR Research EyeLink eye tracker",
+      sr = "an SR Research EyeLink eye tracker (samples exported with Data Viewer)",
+      tobii = "a Tobii eye tracker (recorded with Titta)",
+      pupillabs = "Pupil Labs Neon eye-tracking glasses",
+      auto = if (length(files) && all(grepl("\\.asc(\\.gz)?$", files, ignore.case = TRUE)))
+               "an SR Research EyeLink eye tracker" else "",
+      "")
+    rec <- if ("eyes_recorded" %in% names(raw())) unique(stats::na.omit(raw()$eyes_recorded)) else character()
+    list(tracker = tracker,
+         binocular = identical(input$tracker, "tobii") || "both" %in% rec,
+         mono_eye = if (length(rec) == 1 && rec != "both") rec else NULL,
+         eye = if (input$tracker %in% c("auto", "eyelink", "tobii")) input$asc_eye else NA,
+         pupil_col = input$col_pupil,
+         gazer_version = gazer_version, app_version = app_version)
+  })
+
+  methods <- reactive({
+    req(result())
+    methods_paragraph(result(), methods_meta())
+  })
+
+  output$methods_ui <- renderUI({
+    if (is.null(result())) {
+      return(p(class = "text-muted small mb-0",
+               "Run the pipeline to generate a paragraph describing exactly what was done, with the gazeR citation, every pre-processing setting, exclusions and the final sample."))
+    }
+    m <- methods()
+    tagList(
+      p(class = "small text-muted",
+        "Generated from this run's settings and results. Check it, and edit event names, conditions and wording to suit your paper."),
+      div(id = "methods_text", class = "methods-text", m$text),
+      h6(class = "mt-3", "References"),
+      tags$ul(class = "small", lapply(m$references, function(r) tags$li(markdown::mark_html(r, template = FALSE) |> HTML()))),
+      div(class = "d-flex gap-2",
+          tags$button(class = "btn btn-sm btn-primary", type = "button",
+                      onclick = "navigator.clipboard.writeText(document.getElementById('methods_text').innerText); this.innerText = 'Copied';",
+                      icon("copy"), " Copy paragraph"),
+          downloadButton("dl_methods", "Download with references (.md)", class = "btn-sm btn-outline-primary"))
+    )
+  })
+
+  output$dl_methods <- downloadHandler(
+    filename = function() paste0(stamp("methods"), ".md"),
+    content = function(file) {
+      m <- methods()
+      writeLines(c("## Pupil pre-processing", "", m$text, "", "### References", "",
+                   paste("-", m$references)), file)
     }
   )
 

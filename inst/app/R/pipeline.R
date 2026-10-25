@@ -9,6 +9,7 @@ read_gazer_files <- function(paths, names = basename(paths), eye = "average") {
       d <- gazer::read_asc(paths[i], eye = eye,
                            subject = sub("\\.asc(\\.gz)?$", "", names[i], ignore.case = TRUE))
       d$sample_rate <- attr(d, "asc_info")$hz
+      d$eyes_recorded <- attr(d, "asc_info")$recorded_eyes
       attr(d, "asc_info") <- NULL
     } else {
       d <- data.table::fread(paths[i], na.strings = c("NA", "."), fill = TRUE)
@@ -269,6 +270,7 @@ run_pupil_pipeline <- function(data, p, log = function(...) NULL) {
   }
   if (anyNA(rates$hz)) stop("Could not determine the sampling rate for: ",
                             paste(rates$subject[is.na(rates$hz)], collapse = ", "), call. = FALSE)
+  rates_original <- rates
   rate_summary <- function(r) paste(sprintf("%g Hz (%d)", sort(unique(r$hz)),
                                             as.integer(table(r$hz))), collapse = ", ")
   if (dplyr::n_distinct(rates$hz) > 1) {
@@ -522,7 +524,7 @@ run_pupil_pipeline <- function(data, p, log = function(...) NULL) {
   names(d)[names(d) == ".hz"] <- "processing_hz"
   names(cleaned)[names(cleaned) == ".hz"] <- "processing_hz"
   list(data = d, binned = binned, quality = quality, cleaned = cleaned,
-       timevar = timevar, params = p, rates = rates)
+       timevar = timevar, params = p, rates = rates, rates_original = rates_original)
 }
 
 # ---- Summaries for plotting ---------------------------------------------
@@ -704,6 +706,7 @@ column_descriptions <- c(
   blink_left = "1 while the left eye is in a blink (binocular 'Both' only).",
   blink_right = "1 while the right eye is in a blink (binocular 'Both' only).",
   sample_rate = "Sampling rate in Hz as recorded (EyeLink file header). After upsampling, the new rate.",
+  eyes_recorded = "Eyes recorded in the file: left, right or both (EyeLink file header).",
   source_file = "Name of the file the row came from.",
   sr_trial_time = "SR Data Viewer sample reports: TIMESTAMP - IP_START_TIME (ms).",
   event_label = "Tobii (Titta): text after the onset prefix of the trial's onset message.",
@@ -789,4 +792,146 @@ eye_summary <- function(d, single_label = "pupil") {
                        .groups = "drop")
   })
   dplyr::bind_rows(rows) %>% dplyr::arrange(subject, eye)
+}
+
+# ---- Methods paragraph --------------------------------------------------
+
+and_join <- function(x) if (length(x) <= 1) x else paste(paste(x[-length(x)], collapse = ", "), "and", x[length(x)])
+
+# A methods paragraph and reference list describing one pipeline run, for
+# users to adapt in a paper. `meta` holds what the pipeline doesn't know:
+# tracker (label), eye ("left", "right", "average", "both", or NA),
+# pupil_col (mapped pupil column), and package versions.
+methods_paragraph <- function(res, meta) {
+  p <- res$params
+  q <- res$quality
+  num <- function(x, d = 0) formatC(x, format = "f", digits = d, big.mark = ",")
+  pct <- function(x, d = 1) paste0(num(100 * x, d), "%")
+  ev <- function(e) paste(e, collapse = " or ")
+  refs <- c(gazer = "Geller, J., Winn, M. B., Mahr, T., & Mirman, D. (2020). GazeR: A package for processing gaze position and pupil size data. *Behavior Research Methods, 52*, 2232–2255.")
+  s <- character()
+
+  # Software and recording
+  s <- c(s, sprintf("Pupil data were pre-processed in R using gazeR (version %s; Geller et al., 2020) through the shiny gazeR app (version %s).",
+                    meta$gazer_version, meta$app_version))
+  r0 <- res$rates_original
+  hz <- sort(unique(r0$hz))
+  rec <- if (length(hz) == 1) sprintf("Data were recorded at %s Hz", num(hz)) else
+    sprintf("Data were recorded at %s", paste(vapply(hz, function(h) sprintf("%s Hz (n = %d)", num(h), sum(r0$hz == h)), ""), collapse = " and "))
+  if (!is.null(meta$tracker) && nzchar(meta$tracker)) rec <- sub("^Data were recorded", paste("Data were recorded with", meta$tracker), rec)
+  if (length(hz) > 1 && identical(p$rate_mode, "upsample")) {
+    rec <- paste0(rec, sprintf("; participants recorded below %s Hz were upsampled to %s Hz, with new samples linearly interpolated between adjacent recorded samples", num(max(hz)), num(max(hz))))
+  } else if (length(hz) > 1) {
+    rec <- paste0(rec, "; each participant was processed at their own sampling rate")
+  }
+  s <- c(s, paste0(rec, "."))
+  eye <- meta$eye
+  pcol <- if (is.null(meta$pupil_col)) "pupil" else meta$pupil_col
+  if (!isTRUE(meta$binocular)) {
+    if (!is.null(meta$mono_eye) && meta$mono_eye %in% c("left", "right")) {
+      s <- c(s, sprintf("The %s eye was recorded.", meta$mono_eye))
+    }
+  } else if (identical(eye, "left") || identical(pcol, "pupil_left")) {
+    s <- c(s, "Pupil size from the left eye was analysed.")
+  } else if (identical(eye, "right") || identical(pcol, "pupil_right")) {
+    s <- c(s, "Pupil size from the right eye was analysed.")
+  } else if (eye %in% c("average", "both")) {
+    s <- c(s, "Pupil size was averaged across both eyes for samples where both eyes were valid; a sample was treated as part of a blink if either eye was blinking.")
+  }
+
+  # Cleaning
+  rng <- c(p$pupil_min, p$pupil_max)
+  if (any(is.finite(rng))) {
+    s <- c(s, if (all(is.finite(rng))) sprintf("Pupil values outside %s–%s were removed.", rng[1], rng[2])
+              else if (is.finite(rng[1])) sprintf("Pupil values below %s were removed.", rng[1])
+              else sprintf("Pupil values above %s were removed.", rng[2]))
+  }
+  if (identical(p$blink_method, "hershman")) {
+    refs <- c(refs, hershman = "Hershman, R., Henik, A., & Cohen, N. (2018). A novel blink detection method based on pupillometry noise. *Behavior Research Methods, 50*, 107–114.")
+    b <- sprintf("Blinks were identified with a noise-based algorithm (Hershman et al., 2018; %s-ms smoothing window, blinks less than %s ms apart merged)%s",
+                 p$hershman_smooth, p$hershman_gap, if (isTRUE(p$use_blink_col)) " in addition to the eye tracker's blink events" else "")
+  } else {
+    b <- "Blinks were identified from the eye tracker's blink events"
+  }
+  pad <- if (p$fillback > 0 || p$fillforward > 0)
+    sprintf(", and each period of missing data was extended by %s ms before and %s ms after", p$fillback, p$fillforward) else ""
+  s <- c(s, paste0(b, pad, "; these samples were set to missing."))
+  if (isTRUE(p$use_mad)) {
+    refs <- c(refs, kret = "Kret, M. E., & Sjak-Shie, E. E. (2019). Preprocessing pupil size data: Guidelines and code. *Behavior Research Methods, 51*, 1336–1342.")
+    s <- c(s, sprintf("Samples with implausibly fast changes in pupil size (dilation speed more than %s median absolute deviations above the median, per trial) were also removed (Kret & Sjak-Shie, 2019).", p$mad_n))
+  }
+
+  # Behavioural exclusions
+  beh <- q[!q$reason %in% c("kept", "trial missing data", "subject missing data", "no valid samples") &
+             !grepl("^no '", q$reason), ]
+  if (nrow(beh)) {
+    parts <- vapply(split(beh, beh$reason), function(b) sprintf("%s (%d trials)", b$reason[1], nrow(b)), "")
+    s <- c(s, sprintf("Before pre-processing, trials were excluded on behavioural grounds: %s.", paste(parts, collapse = "; ")))
+  }
+
+  # Missing data exclusion
+  thr <- pct(p$missingthresh, 0)
+  win <- isTRUE(p$timelock)
+  missing_tr <- q[q$reason %in% c("trial missing data", "no valid samples"), ]
+  subj_out <- unique(q$subject[q$reason == "subject missing data"])
+  noevent <- q[grepl("^no '", q$reason), ]
+  s <- c(s, sprintf("Participants with more than %s of samples missing across all their trials, and trials with more than %s missing, were excluded%s.",
+                    thr, thr, if (win) ", counting only samples within the analysis window" else ""))
+
+  # Interpolation and smoothing
+  interp <- if (p$interp_type == "cubic") "cubic-spline" else "linear"
+  sm <- switch(p$filter,
+    moving = sprintf("smoothed with a %s-sample moving average", p$ma_n),
+    Hann = "smoothed with an 11-point Hanning window",
+    lowpass = sprintf("low-pass filtered at %s Hz (order-%s Butterworth filter applied forwards and backwards, i.e. zero phase)", p$lp_cutoff, p$lp_order),
+    none = NULL)
+  s <- c(s, if (is.null(sm)) sprintf("Missing samples were reconstructed by %s interpolation.", interp)
+            else if (p$filter %in% c("moving", "Hann") && identical(p$step_first, "smooth"))
+              sprintf("The pupil trace was %s, and missing samples were then reconstructed by %s interpolation.", sm, interp)
+            else sprintf("Missing samples were reconstructed by %s interpolation, and the pupil trace was then %s.", interp, sm))
+
+  # Baseline and time-locking
+  if (p$baseline != "none") {
+    refs <- c(refs, mathot = "Mathôt, S., Fabius, J., Van Heusden, E., & Van der Stigchel, S. (2018). Safe and sensible preprocessing and baseline correction of pupil-size data. *Behavior Research Methods, 50*, 94–106.")
+    how <- if (p$baseline_method == "div") "dividing by" else "subtracting"
+    period <- if (p$baseline == "event") sprintf("the %s ms before %s", p$baseline_dur, ev(p$baseline_event))
+              else sprintf("%s–%s ms", p$baseline_window[1], p$baseline_window[2])
+    s <- c(s, sprintf("Pupil size was baseline-corrected per trial by %s the median pupil size in %s (Mathôt et al., 2018)%s.",
+                      how, period, if (p$baseline_method == "div") ", giving proportional change from baseline" else ""))
+  }
+  if (win) {
+    w <- p$window
+    s <- c(s, sprintf("Trials were time-locked to %s%s%s.", ev(p$timelock_event),
+                      if (all(is.finite(w))) sprintf(" and analysed from %s to %s ms", w[1], w[2]) else "",
+                      if (nrow(noevent)) sprintf(" (%d trials without this event were excluded)", nrow(noevent)) else ""))
+  }
+  grp <- setdiff(p$group_cols, "timebins")
+  s <- c(s, sprintf("Data were then averaged into %s-ms time bins%s.", p$bin_length,
+                    if (length(grp)) paste0(" per ", and_join(grp)) else ""))
+
+  # Outcome
+  n_sub <- length(unique(q$subject))
+  kept <- q[q$reason == "kept", ]
+  n_tr <- nrow(q)
+  per_sub <- table(kept$subject)
+  s <- c(s, sprintf("In total, %d of %d participants and %s of %s trials (%s) were retained.",
+                    length(unique(kept$subject)), n_sub, num(nrow(kept)), num(n_tr), pct(nrow(kept) / n_tr)))
+  excl <- character()
+  if (length(subj_out)) excl <- c(excl, sprintf("%d participant%s (all of their trials)", length(subj_out),
+                                                if (length(subj_out) != 1) "s" else ""))
+  if (nrow(missing_tr)) excl <- c(excl, sprintf("%s%s trial%s", if (length(subj_out)) "a further " else "",
+                                                num(nrow(missing_tr)), if (nrow(missing_tr) != 1) "s" else ""))
+  if (length(excl)) s <- c(s, sprintf("Missing data led to the exclusion of %s.", paste(excl, collapse = " and ")))
+  if (length(per_sub) > 1) {
+    s <- c(s, sprintf("Participants contributed on average %s trials (SD = %s, range %d–%d), and on average %s of samples per retained trial were interpolated.",
+                      num(mean(per_sub), 1), num(stats::sd(per_sub), 1), min(per_sub), max(per_sub),
+                      pct(mean(kept$prop_missing, na.rm = TRUE))))
+  } else if (length(per_sub) == 1) {
+    s <- c(s, sprintf("The retained participant contributed %d trials, and on average %s of samples per retained trial were interpolated.",
+                      as.integer(per_sub), pct(mean(kept$prop_missing, na.rm = TRUE))))
+  }
+
+  refs <- c(refs, app = sprintf("Geller, J. (%s). *shiny gazeR* (Version %s) [Computer software]. https://github.com/jgeller112/shiny-gazeR",
+                                format(Sys.Date(), "%Y"), meta$app_version))
+  list(text = paste(s, collapse = " "), references = unname(refs[order(names(refs) != "gazer", unname(refs))]))
 }

@@ -162,6 +162,7 @@ One row per sample, as loaded. No cleaning has been applied.
 | `pupil_left`, `pupil_right`, `x_left`, `y_left`, `x_right`, `y_right` | Each eye separately (Both only) |
 | `blink_left`, `blink_right` | 1 while that eye is blinking (Both only) |
 | `sample_rate` | Recorded sampling rate (Hz), from the EyeLink file header |
+| `eyes_recorded` | Eyes recorded in the file: left, right or both (EyeLink) |
 | `source_file` | File the row came from |
 | *trial variables* | One column per Experiment Builder `TRIAL_VAR` (e.g. `condition`) |
 
@@ -206,6 +207,19 @@ The raw columns for retained trials, plus:
 | `se`, `half`, `lower`, `upper` | Standard error, half-width of the band (SE or 95% CI) and its edges |
 | `error_type` | Which error the band shows |
 | `unit`, `value` | Raincloud / behaviour plots: the unit and its mean pupil in the window |
+
+## Methods paragraph
+
+After a run, the Export tab shows a **methods paragraph** describing what was done, ready to adapt for a paper. It covers:
+
+- gazeR and shiny gazeR versions and citations;
+- the eye tracker, sampling rates (and upsampling) and the eye analysed;
+- every cleaning step and its settings;
+- the exclusion rules and how many trials and participants they removed;
+- interpolation, smoothing, baseline, time-locking and binning;
+- the final sample, and how much of each trial was interpolated.
+
+It also lists references for the methods used. Copy it, or download it with references as Markdown. Check the wording: event names, for example, appear as they do in your files.
 
 ## Citing
 

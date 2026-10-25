@@ -1,5 +1,9 @@
 # shinygazer 0.3.1
 
+* Methods paragraph (Export tab): ready-to-adapt text describing the run,
+  with gazeR citation, every pre-processing setting, exclusions and the final
+  sample, plus references for the methods used. Copy or download as Markdown.
+
 * Available from r-universe (https://jgeller112.r-universe.dev). The browser
   version installs gazeR and shinygazer from there instead of building its
   own WebAssembly packages.
