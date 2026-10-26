@@ -293,7 +293,8 @@ run_pupil_pipeline <- function(data, p, log = function(...) NULL) {
   cleaned <- tibble::as_tibble(data.table::rbindlist(lapply(res, `[[`, "cleaned"), fill = TRUE))
   log("Blinks detected: ", sprintf("%.1f%%", 100 * mean(cleaned$blink_detected > 0, na.rm = TRUE)), " of samples")
   for (r in setdiff(unique(quality$reason), "kept")) {
-    log("Excluding ", sum(quality$reason == r), " of ", nrow(quality), " trials: ", r,
+    log("Excluding ", sum(quality$reason == r), " of ", nrow(quality), " trials (",
+        sprintf("%.1f%%", 100 * sum(quality$reason == r) / nrow(quality)), "): ", r,
         if (grepl("missing", r)) paste0(" (> ", p$missingthresh * 100, "%)") else "")
   }
   d <- tibble::as_tibble(data.table::rbindlist(lapply(res, `[[`, "data"), fill = TRUE))
@@ -331,7 +332,9 @@ run_pipeline_core <- function(data, p, log = function(...) NULL, stop_if_empty =
   # 0. Behavioural exclusions (accuracy, RT) before any processing
   behav_excl <- behaviour_exclusions(data, p)
   for (r in unique(behav_excl$reason)) {
-    log("Excluding ", sum(behav_excl$reason == r), " trials: ", r)
+    n_r <- sum(behav_excl$reason == r)
+    n_all <- nrow(dplyr::distinct(data, subject, trial))
+    log("Excluding ", n_r, " of ", n_all, " trials (", sprintf("%.1f%%", 100 * n_r / n_all), "): ", r)
   }
   d <- dplyr::anti_join(data, behav_excl, by = c("subject", "trial"))
   if (nrow(d) == 0) stop("All trials were removed by the behavioural exclusions.", call. = FALSE)
@@ -467,7 +470,8 @@ run_pipeline_core <- function(data, p, log = function(...) NULL, stop_if_empty =
       dplyr::arrange(subject, trial)
   }
   for (r in setdiff(unique(quality$reason), c("kept", unique(behav_excl$reason)))) {
-    log("Excluding ", sum(quality$reason == r), " of ", nrow(quality), " trials: ", r,
+    log("Excluding ", sum(quality$reason == r), " of ", nrow(quality), " trials (",
+        sprintf("%.1f%%", 100 * sum(quality$reason == r) / nrow(quality)), "): ", r,
         if (grepl("missing", r)) paste0(" (> ", p$missingthresh * 100, "%",
                                         if (use_window) " in the analysis window" else "", ")") else "")
   }
@@ -941,8 +945,9 @@ methods_paragraph <- function(res, meta) {
   beh <- q[!q$reason %in% c("kept", "trial missing data", "subject missing data", "no valid samples") &
              !grepl("^no '", q$reason), ]
   if (nrow(beh)) {
-    parts <- vapply(split(beh, beh$reason), function(b) sprintf("%s (%d trials)", b$reason[1], nrow(b)), "")
-    s <- c(s, sprintf("Before pre-processing, trials were excluded on behavioural grounds: %s.", paste(parts, collapse = "; ")))
+    parts <- vapply(split(beh, beh$reason), function(b) sprintf("%s (%d trials, %s)", b$reason[1], nrow(b), pct(nrow(b) / nrow(q))), "")
+    s <- c(s, sprintf("Before pre-processing, %s of %s trials (%s) were excluded on behavioural grounds: %s.",
+                      num(nrow(beh)), num(nrow(q)), pct(nrow(beh) / nrow(q)), paste(parts, collapse = "; ")))
   }
 
   # Missing data exclusion

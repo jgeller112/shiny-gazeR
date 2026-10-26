@@ -1,3 +1,9 @@
+# shinygazer 0.3.4
+
+* Behavioural exclusions report percentages: the step 6 preview shows the
+  overall and per-reason percentage of trials excluded and the range across
+  participants; log lines and the methods paragraph include percentages.
+
 # shinygazer 0.3.3
 
 * Participants are processed one at a time and then combined, so memory use

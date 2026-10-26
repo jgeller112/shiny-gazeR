@@ -578,11 +578,18 @@ server <- function(input, output, session) {
               rt_min = input$rt_min, rt_max = input$rt_max, rt_sd = input$rt_sd)
     ex <- tryCatch(behaviour_exclusions(d, p), error = function(e) NULL)
     if (is.null(ex) || !nrow(ex)) return(NULL)
-    n_tr <- nrow(dplyr::distinct(d, subject, trial))
+    all_tr <- dplyr::distinct(d, subject, trial)
+    n_tr <- nrow(all_tr)
     tab <- table(ex$reason)
+    # Share of each participant's trials excluded
+    per_sub <- table(factor(ex$subject, levels = unique(all_tr$subject))) / table(all_tr$subject)
+    worst <- names(per_sub)[which.max(per_sub)]
     div(class = "small text-warning mt-1",
-        icon("filter"), sprintf(" %d of %d trials will be excluded: ", nrow(ex), n_tr),
-        paste(sprintf("%s (%d)", names(tab), as.integer(tab)), collapse = ", "))
+        icon("filter"), sprintf(" %d of %d trials (%.1f%%) will be excluded: ", nrow(ex), n_tr, 100 * nrow(ex) / n_tr),
+        paste(sprintf("%s (%d, %.1f%%)", names(tab), as.integer(tab), 100 * as.integer(tab) / n_tr), collapse = ", "),
+        if (length(per_sub) > 1)
+          tags$div(sprintf("Per participant: %.1f%%–%.1f%% of trials (most: %s).",
+                           100 * min(per_sub), 100 * max(per_sub), worst)))
   })
 
   output$behav_status <- renderUI({
