@@ -246,9 +246,73 @@ event_onset <- function(time, message, events) {
 
 event_label <- function(events) paste0("'", paste(events, collapse = "' or '"), "'")
 
-# Run the full pipeline. Returns a list with the processed sample-level data,
-# the binned data, a per-trial quality table and the parameters used.
+# Error listing why every trial was excluded.
+all_excluded_error <- function(quality, p) {
+  tab <- table(quality$reason)
+  why <- paste(sprintf("%s (%d)", names(tab), as.integer(tab)), collapse = ", ")
+  hint <- if (any(grepl("^no ", names(tab)))) "Check the time-lock event(s), or turn time-locking off if the recording has no events."
+          else if (any(grepl("missing", names(tab)))) sprintf("Trials or participants with more than %.0f%% missing are excluded; raise the threshold, reduce blink padding, or pick the better eye.", 100 * p$missingthresh)
+          else "See the reasons above."
+  stop("All trials were excluded: ", why, ". ", hint, call. = FALSE)
+}
+
+# Run the pipeline one participant at a time, to keep memory low (every
+# step, including the exclusion rules, is per participant), then combine
+# and bin everyone together. Returns the same structure as
+# run_pipeline_core().
 run_pupil_pipeline <- function(data, p, log = function(...) NULL) {
+  subs <- unique(as.character(data$subject))
+  if (length(subs) <= 1) return(run_pipeline_core(data, p, log))
+  n_tr <- nrow(dplyr::distinct(data, subject, trial))
+  log("Starting with ", n_tr, " trials from ", length(subs), " participants (processed one at a time)")
+  rates <- subject_rates(data)
+  if (identical(p$rate_mode, "upsample") && !anyNA(rates$hz)) {
+    p$target_hz <- max(rates$hz)
+    low <- rates[rates$hz < p$target_hz, ]
+    if (nrow(low)) log("Upsampling ", paste(sprintf("%s (%g Hz)", low$subject, low$hz), collapse = ", "),
+                       " to ", p$target_hz, " Hz")
+  } else if (dplyr::n_distinct(rates$hz) > 1) {
+    log("Mixed sampling rates, each participant processed at their own rate")
+  }
+  res <- vector("list", length(subs))
+  first_log <- character()
+  for (i in seq_along(subs)) {
+    msgs <- character()
+    lg <- function(...) msgs <<- c(msgs, paste0(...))
+    di <- data[as.character(data$subject) == subs[i], , drop = FALSE]
+    res[[i]] <- tryCatch(run_pipeline_core(di, p, lg, stop_if_empty = FALSE),
+                         error = function(e) stop(subs[i], ": ", conditionMessage(e), call. = FALSE))
+    if (i == 1) first_log <- msgs
+    rm(di)
+    invisible(gc(verbose = FALSE))
+  }
+  # Settings from the first participant; counts are summarised below
+  skip <- "^(Starting|Excluding|Done|Blinks detected|Pupil outside|Dropped|Low-pass: |Binning|Sampling rate|Upsampling|Mixed)"
+  for (m in first_log[!grepl(skip, first_log)]) log(m)
+  quality <- dplyr::bind_rows(lapply(res, `[[`, "quality"))
+  cleaned <- tibble::as_tibble(data.table::rbindlist(lapply(res, `[[`, "cleaned"), fill = TRUE))
+  log("Blinks detected: ", sprintf("%.1f%%", 100 * mean(cleaned$blink_detected > 0, na.rm = TRUE)), " of samples")
+  for (r in setdiff(unique(quality$reason), "kept")) {
+    log("Excluding ", sum(quality$reason == r), " of ", nrow(quality), " trials: ", r,
+        if (grepl("missing", r)) paste0(" (> ", p$missingthresh * 100, "%)") else "")
+  }
+  d <- tibble::as_tibble(data.table::rbindlist(lapply(res, `[[`, "data"), fill = TRUE))
+  if (!nrow(d)) all_excluded_error(quality, p)
+  timevar <- Filter(Negate(is.null), lapply(res, `[[`, "timevar"))[[1]]
+  aggvars <- unique(c(p$group_cols, "timebins"))
+  log("Binning into ", p$bin_length, " ms bins by ", paste(aggvars, collapse = ", "))
+  binned <- gazer::downsample_gaze(d, bin.length = p$bin_length, timevar = timevar,
+                                   aggvars = aggvars, type = "pupil", pupil = "baselinecorrectedp")
+  log("Done: ", nrow(dplyr::distinct(d, subject, trial)), " trials retained")
+  list(data = d, binned = binned, quality = quality, cleaned = cleaned, timevar = timevar,
+       params = p,
+       rates = dplyr::bind_rows(lapply(res, `[[`, "rates")),
+       rates_original = dplyr::bind_rows(lapply(res, `[[`, "rates_original")))
+}
+
+# Run the full pipeline on one participant (or a whole data set). Returns a list with the processed sample-level data,
+# the binned data, a per-trial quality table and the parameters used.
+run_pipeline_core <- function(data, p, log = function(...) NULL, stop_if_empty = TRUE) {
   `%>%` <- dplyr::`%>%`
   n_trials <- function(d) nrow(dplyr::distinct(d, subject, trial))
 
@@ -282,17 +346,17 @@ run_pupil_pipeline <- function(data, p, log = function(...) NULL) {
   rates_original <- rates
   rate_summary <- function(r) paste(sprintf("%g Hz (%d)", sort(unique(r$hz)),
                                             as.integer(table(r$hz))), collapse = ", ")
-  if (dplyr::n_distinct(rates$hz) > 1) {
-    if (identical(p$rate_mode, "upsample")) {
-      target <- max(rates$hz)
+  target <- if (!is.null(p$target_hz)) p$target_hz else max(rates$hz)
+  if (identical(p$rate_mode, "upsample") && any(rates$hz < target)) {
+    {
       low <- rates[rates$hz < target, ]
       log("Upsampling ", paste(sprintf("%s (%g Hz)", low$subject, low$hz), collapse = ", "),
           " to ", target, " Hz")
       d <- upsample_subjects(d, rates, target)
       rates$hz <- target
-    } else {
-      log("Mixed sampling rates, each participant processed at their own rate: ", rate_summary(rates))
     }
+  } else if (dplyr::n_distinct(rates$hz) > 1) {
+    log("Mixed sampling rates, each participant processed at their own rate: ", rate_summary(rates))
   } else {
     log("Sampling rate: ", rates$hz[1], " Hz")
   }
@@ -409,12 +473,12 @@ run_pupil_pipeline <- function(data, p, log = function(...) NULL) {
   }
   d <- dplyr::semi_join(d, keep, by = c("subject", "trial"))
   if (nrow(d) == 0) {
-    tab <- table(quality$reason)
-    why <- paste(sprintf("%s (%d)", names(tab), as.integer(tab)), collapse = ", ")
-    hint <- if (any(grepl("^no ", names(tab)))) "Check the time-lock event(s), or turn time-locking off if the recording has no events."
-            else if (any(grepl("missing", names(tab)))) sprintf("Trials or participants with more than %.0f%% missing are excluded; raise the threshold, reduce blink padding, or pick the better eye.", 100 * p$missingthresh)
-            else "See the reasons above."
-    stop("All trials were excluded: ", why, ". ", hint, call. = FALSE)
+    names(cleaned)[names(cleaned) == ".hz"] <- "processing_hz"
+    if (!stop_if_empty) {
+      return(list(data = d[0, ], binned = NULL, quality = quality, cleaned = cleaned, timevar = NULL,
+                  params = p, rates = rates, rates_original = rates_original))
+    }
+    all_excluded_error(quality, p)
   }
 
   # 5. Interpolate + smooth. One smoothing filter: moving average or Hanning
@@ -531,8 +595,9 @@ run_pupil_pipeline <- function(data, p, log = function(...) NULL) {
                                    pupil = "baselinecorrectedp")
 
   log("Done: ", n_trials(d), " trials retained")
-  # Name the per-participant rate clearly in the output
+  # Name the per-participant rate clearly; drop intermediate columns
   names(d)[names(d) == ".hz"] <- "processing_hz"
+  d[intersect(c("interp", "pup", "index", "movingavgpup"), names(d))] <- NULL
   names(cleaned)[names(cleaned) == ".hz"] <- "processing_hz"
   list(data = d, binned = binned, quality = quality, cleaned = cleaned,
        timevar = timevar, params = p, rates = rates, rates_original = rates_original)

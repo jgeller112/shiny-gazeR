@@ -1,3 +1,15 @@
+# shinygazer 0.3.3
+
+* Participants are processed one at a time and then combined, so memory use
+  peaks at about one participant's data instead of the whole study (helps
+  the browser version). Results are identical to processing everyone
+  together.
+* Intermediate columns (`interp`, `pup`, `index`) are no longer kept in the
+  processed data.
+* Requires gazeR >= 0.2.9, where smoothing is done within each trial (it
+  previously blended the first and last samples of a trial with the
+  neighbouring trial).
+
 # shinygazer 0.3.2
 
 * Exclusion threshold slider is now a percentage (0-100%) instead of a
