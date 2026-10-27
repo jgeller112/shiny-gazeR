@@ -121,11 +121,12 @@ sidebar_ui <- sidebar(
                     "SR Data Viewer sample report" = "sr",
                     "Tobii (Titta)" = "tobii",
                     "Pupil Labs Neon" = "pupillabs",
+                    "BIDS (eye-tracking)" = "bids",
                     "gazeR / other CSV" = "generic")),
       uiOutput("tracker_hint"),
       fileInput("files", NULL, multiple = TRUE, buttonLabel = "Browse…",
                 placeholder = "Select file(s)",
-                accept = c(".asc", ".csv", ".tsv", ".txt", ".xls", ".gz", ".zip")),
+                accept = c(".asc", ".csv", ".tsv", ".txt", ".xls", ".gz", ".zip", ".json")),
       conditionalPanel("input.tracker == 'tobii'",
                        fileInput("msg_files", "Tobii message CSVs", multiple = TRUE,
                                  buttonLabel = "Browse…", accept = ".csv"),
@@ -146,7 +147,10 @@ sidebar_ui <- sidebar(
                          textInput("pl_subject", info("Subject ID", "Used for loose CSVs. For a .zip, each recording folder name becomes the subject."), "sub01")
                        ),
                        checkboxInput("pl_aoi", info("Use surface (AOI) data", "Reads gaze_surface.csv from the Marker Mapper enrichment and adds gaze_detected_on_surface plus normalised surface x/y."), FALSE)),
-      conditionalPanel("['auto', 'eyelink', 'tobii'].indexOf(input.tracker) >= 0",
+      conditionalPanel("input.tracker == 'bids'",
+                       textInput("bids_trial_start", info("Trial start messages", "Comma-separated. A new trial starts at each event message beginning with one of these (e.g. TRIALID for EyeLink data), and time is ms from it. Leave blank to treat each run as one trial (e.g. resting state)."),
+                                 placeholder = "e.g. TRIALID")),
+      conditionalPanel("['auto', 'eyelink', 'tobii', 'bids'].indexOf(input.tracker) >= 0",
                        radioButtons("asc_eye", info("Eye (binocular)", "Average: pupil, x and y are the mean of both eyes, only where both are valid; blink is 1 if either eye is blinking. Both: also keeps pupil_left / pupil_right, x/y and blink_left / blink_right for each eye, so you can map one eye below (use its matching blink column). Changing this re-reads the files."),
                                     c(Average = "average", Left = "left", Right = "right", Both = "both"), inline = TRUE)),
       actionLink("load_example", tagList(icon("flask"), "Try the example data")),
@@ -477,6 +481,7 @@ server <- function(input, output, session) {
       sr = "Data Viewer sample reports (.xls/.txt, tab-delimited). Time is taken as TIMESTAMP − IP_START_TIME.",
       tobii = "Gaze CSVs here, message CSVs below. Each subject's two files must have the same name. Tobii has no blink events, so noise-based blink detection is turned on.",
       pupillabs = "Upload a .zip of the Pupil Cloud Time Series export (one folder per recording, each becomes a subject), or gaze.csv, 3d_eye_states.csv and events.csv from one recording. The plausible pupil range is set to 2–9 mm.",
+      bids = "Upload a .zip of a BIDS dataset (BEP020 eye-tracking), or the *_physio.tsv.gz files with their .json sidecars and *_physioevents files. Each sub/ses/task/run becomes a subject; left- and right-eye recordings are merged.",
       generic = "One row per sample, with subject, trial, time (ms) and pupil columns, e.g. output from parse_asc().")
     p(class = "text-muted small mb-2", hint)
   })
@@ -517,13 +522,20 @@ server <- function(input, output, session) {
                               start_messages = if (length(starts)) starts else NULL,
                               max_event_lag_ms = input$pl_lag, aoi = isTRUE(input$pl_aoi))
       },
+      bids = {
+        starts <- trimws(unlist(strsplit(if (is.null(input$bids_trial_start)) "" else input$bids_trial_start, ",")))
+        starts <- starts[nzchar(starts)]
+        read_bids_upload(f$datapath, f$name, eye = input$asc_eye,
+                         trial_start = if (length(starts)) starts else NULL)
+      },
       read_gazer_files(f$datapath, f$name, eye = input$asc_eye)
     )
   }
 
   observeEvent(list(input$files, input$msg_files, input$asc_eye, input$tracker,
                     input$tobii_onset, input$tobii_offset, input$pl_subject,
-                    input$pl_start_mode, input$pl_start_messages, input$pl_lag, input$pl_aoi), {
+                    input$pl_start_mode, input$pl_start_messages, input$pl_lag, input$pl_aoi,
+                    input$bids_trial_start), {
     req(input$files)
     if (input$tracker == "tobii" && is.null(input$msg_files)) return()
     d <- tryCatch(withProgress(message = "Reading files", value = 0.3, read_uploads()),
@@ -532,8 +544,23 @@ server <- function(input, output, session) {
                     NULL
                   })
     req(d)
+    # BIDS: defaults from the sidecars (pupil in mm, e.g. Pupil Labs; no
+    # blink events, e.g. Tobii)
+    info <- attr(d, "bids_info")
+    bids_info(info)
+    if (!is.null(info)) {
+      if (any(tolower(info$pupil_units) %in% c("mm", "millimeter", "millimeters"))) {
+        updateNumericInput(session, "pupil_min", value = 2)
+        updateNumericInput(session, "pupil_max", value = 9)
+      }
+      if (!any(info$blink_events)) {
+        updateRadioButtons(session, "blink_method", selected = "hershman")
+        showNotification("No blink events in the BIDS data, so noise-based blink detection is turned on.", type = "message")
+      }
+    }
     set_raw(d, paste(nrow(input$files), "file(s)"))
   })
+  bids_info <- reactiveVal(NULL)
 
   load_example <- function() {
     pending_groups(c("subject", "script"))
@@ -772,7 +799,7 @@ server <- function(input, output, session) {
   # Missing data and blinks per participant and eye, from the data as loaded
   eye_stats <- reactive({
     req(std())
-    label <- if (input$tracker %in% c("auto", "eyelink", "tobii") && !is.null(input$asc_eye) &&
+    label <- if (input$tracker %in% c("auto", "eyelink", "tobii", "bids") && !is.null(input$asc_eye) &&
                  input$asc_eye %in% c("left", "right", "average")) {
       c(left = "left", right = "right", average = "average (both eyes)")[[input$asc_eye]]
     } else "pupil"
@@ -1768,11 +1795,14 @@ server <- function(input, output, session) {
   # ---- Methods paragraph ---------------------------------------------------
   methods_meta <- reactive({
     files <- if (!is.null(input$files)) input$files$name else character()
+    makers <- if (identical(input$tracker, "bids") && !is.null(bids_info()))
+      unique(stats::na.omit(bids_info()$manufacturer)) else character()
     tracker <- switch(input$tracker,
       eyelink = "an SR Research EyeLink eye tracker",
       sr = "an SR Research EyeLink eye tracker (samples exported with Data Viewer)",
       tobii = "a Tobii eye tracker (recorded with Titta)",
       pupillabs = "Pupil Labs Neon eye-tracking glasses",
+      bids = if (length(makers)) paste("an eye tracker from", paste(makers, collapse = " / ")) else "",
       auto = if (length(files) && all(grepl("\\.asc(\\.gz)?$", files, ignore.case = TRUE)))
                "an SR Research EyeLink eye tracker" else "",
       "")
@@ -1780,7 +1810,7 @@ server <- function(input, output, session) {
     list(tracker = tracker,
          binocular = identical(input$tracker, "tobii") || "both" %in% rec,
          mono_eye = if (length(rec) == 1 && rec != "both") rec else NULL,
-         eye = if (input$tracker %in% c("auto", "eyelink", "tobii")) input$asc_eye else NA,
+         eye = if (input$tracker %in% c("auto", "eyelink", "tobii", "bids")) input$asc_eye else NA,
          pupil_col = input$col_pupil,
          gazer_version = gazer_version, app_version = app_version)
   })

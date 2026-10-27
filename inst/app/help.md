@@ -27,9 +27,12 @@ The app needs **one row per sample** with at least a subject, trial, time (ms) a
 | SR Data Viewer | Sample reports (`.xls`/`.txt`) | `data.table::fread()` |
 | Tobii (Titta) | Gaze CSVs plus matching message CSVs (same file names) | `merge_tobii_titta()` |
 | Pupil Labs Neon | A `.zip` of the Pupil Cloud Time Series export (one folder per recording), or `gaze.csv`, `3d_eye_states.csv` and `events.csv` from one recording | `parse_pl()` |
+| BIDS (eye-tracking) | A `.zip` of a BIDS dataset (BEP020), or the `*_physio.tsv.gz` files with their `.json` sidecars and `*_physioevents` files | `read_bids_eyetrack()` |
 | gazeR / other CSV | Any long table, e.g. output from `parse_asc()` | `data.table::fread()` |
 
 For Pupil Labs, choose whether **any message** or only **specific messages** start a trial. With specific messages (e.g. `trial-started-light, start-dark`), in-between events such as `blank` stay inside the trial. Samples before the first trial start are dropped. Neon reports pupil diameter in mm and keeps values during blinks, so keep *Also treat tracker blink samples as missing* ticked. The plausible range defaults to 2–9 mm. Tick *Use surface (AOI) data* to add Marker Mapper surface columns. See the [Pupil Labs walkthrough](https://www.drjasongeller.com/blog/posts/2025-10-31-pupillabs/).
+
+For BIDS data, each `sub`/`ses`/`task`/`run` becomes a subject (e.g. `sub-01_task-rest`), left- and right-eye recordings are merged, event messages go in the `message` column and blink events become `blink`. A BIDS recording is continuous, so each run is one trial unless you list **Trial start messages** (e.g. `TRIALID`): a new trial then starts at each message beginning with one of them, and time is ms from it. The sampling rate comes from the JSON sidecar. BIDS data from any tracker can be read, including EyeLink, Tobii and Pupil Labs conversions: timestamps in s, ms, µs or ns are converted to ms. If the sidecar gives pupil size in mm (e.g. Pupil Labs), the plausible range is set to 2–9 mm, and if there are no blink events (e.g. Tobii), noise-based blink detection is turned on.
 
 For Tobii, invalid samples (validity flag false) are set to missing, and gaze is in display-area units (0–1). Tobii has no blink events, so the app switches to noise-based blink detection.
 

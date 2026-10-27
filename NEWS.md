@@ -1,3 +1,13 @@
+# shinygazer 0.3.6
+
+* BIDS eye-tracking input: choose **BIDS (eye-tracking)** and upload a .zip
+  of a BEP020 dataset (or the *_physio.tsv.gz files with their sidecars and
+  events). Read with `gazer::read_bids_eyetrack()` (needs gazer >= 0.2.11).
+  Each sub/ses/task/run is a subject; optional trial-start messages split
+  runs into trials. Works for EyeLink, Tobii and Pupil Labs conversions:
+  pupil in mm sets the 2–9 mm range, and data without blink events switch
+  to noise-based blink detection.
+
 # shinygazer 0.3.5
 
 * QC report: self-contained HTML per participant (or a zip of all) with

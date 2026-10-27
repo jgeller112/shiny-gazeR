@@ -120,6 +120,32 @@ read_pupillabs_upload <- function(paths, names, subject = "sub01", ...) {
   tibble::as_tibble(dplyr::bind_rows(out))
 }
 
+# BIDS eye-tracking (BEP020), read with gazer::read_bids_eyetrack(). Either a
+# .zip of the dataset (any depth) or the loose *_physio.tsv.gz files with
+# their .json sidecars (and *_physioevents files). `...` goes to
+# read_bids_eyetrack() (eye, trial_start).
+read_bids_upload <- function(paths, names, ...) {
+  is_zip <- grepl("\\.zip$", names, ignore.case = TRUE)
+  root <- if (any(is_zip)) {
+    exdir <- tempfile("gazer_bids_")
+    for (z in paths[is_zip]) utils::unzip(z, exdir = exdir)
+    exdir
+  } else {
+    dirname(stage_uploads(paths, names)[1])
+  }
+  files <- list.files(root, pattern = "_physio\\.tsv(\\.gz)?$", recursive = TRUE, full.names = TRUE)
+  files <- files[!grepl("__MACOSX", files)]
+  if (!length(files)) {
+    stop("No *_physio.tsv.gz files found. Upload a .zip of the BIDS dataset, or the ",
+         "*_physio.tsv.gz files with their .json sidecars and *_physioevents files.", call. = FALSE)
+  }
+  no_json <- files[!file.exists(sub("\\.tsv(\\.gz)?$", ".json", files))]
+  if (length(no_json)) {
+    stop("Missing JSON sidecar for: ", paste(basename(no_json), collapse = ", "), call. = FALSE)
+  }
+  gazer::read_bids_eyetrack(files, ...)
+}
+
 # Rename user-selected columns to gazeR's canonical names.
 # `cols` is a named list: subject, trial, time, pupil (required),
 # blink, message (optional; "" or NULL means absent).
