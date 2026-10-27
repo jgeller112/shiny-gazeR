@@ -160,7 +160,15 @@ sidebar_ui <- sidebar(
         selectInput("col_blink", info("Blink", "Optional. 1 = sample is in a blink."), NULL),
         selectInput("col_message", info("Message", "Optional. Event markers, needed for event-based baselines and time-locking."), NULL)
       ),
-      uiOutput("rate_ui")
+      uiOutput("rate_ui"),
+      radioButtons("rate_target", info("Resample",
+                                       "Keep: each participant is processed at their recorded rate (see above if rates differ). Resample all to: every participant is brought to one rate. Higher rates are downsampled by averaging consecutive samples (a bin with any missing sample stays missing; blinks and messages are kept); lower rates are upsampled with gazer::upsample_gaze(), new samples interpolated from their neighbours."),
+                   c("Keep recorded rates" = "keep", "Resample all to" = "set"), inline = TRUE),
+      conditionalPanel("input.rate_target == 'set'",
+                       numericInput("target_rate", "Target rate (Hz)", 500, min = 1, step = 50)),
+      checkboxInput("resample", info("Fill dropped samples (uniform grid)",
+                                     "Puts each trial on an evenly spaced grid at its own sampling rate and inserts any dropped samples as missing, so they are padded and interpolated like other gaps (like eyeris::resample()). EyeLink files are usually already evenly spaced; useful for trackers that drop samples. Does not change the sampling rate."),
+                    FALSE)
     ),
 
     accordion_panel(
@@ -237,7 +245,10 @@ sidebar_ui <- sidebar(
                        )),
       conditionalPanel("input.baseline != 'none'",
                        radioButtons("baseline_method", NULL, inline = TRUE,
-                                    c(Subtractive = "sub", Divisive = "div"))),
+                                    c(Subtractive = "sub", Divisive = "div")),
+                       radioButtons("baseline_stat", info("Baseline value",
+                                                          "Median (gazeR's default) or mean of the pupil in the baseline period, per trial. Mathôt & Vilotijević (2022) recommend the mean of a short baseline period, with subtractive correction."),
+                                    c(Median = "median", Mean = "mean"), inline = TRUE)),
       tags$div(class = "section-label", "Time-locking"),
       checkboxInput("timelock", info("Align trials to an event", "Sets time 0 to the event onset. gazeR::onset_pupil()"), TRUE),
       conditionalPanel("input.timelock",
@@ -382,6 +393,30 @@ ui <- page_sidebar(
       card(
         card_header(tagList(icon("file-pen"), "Methods paragraph for your paper")),
         uiOutput("methods_ui")
+      ),
+      layout_columns(
+        col_widths = c(4, 4, 4),
+        card(
+          card_header(tagList(icon("file-medical"), "QC report")),
+          p(class = "small text-muted",
+            "A self-contained HTML report per participant: summary, exclusions, the signal at each step, every trial, and all parameters. Needs a pipeline run."),
+          selectInput("qc_subject", "Participant", c("All participants (.zip)" = "")),
+          downloadButton("dl_qc", "Download report", class = "btn-outline-primary")
+        ),
+        card(
+          card_header(tagList(icon("folder-tree"), "BIDS-like export")),
+          p(class = "small text-muted",
+            "A zip with derivatives/shinygazer/sub-*/eye/: processed time series, events, blinks, binned data and trial quality per participant, plus JSON metadata (sampling rate, column descriptions, every setting)."),
+          textInput("bids_task", "Task label", "task"),
+          downloadButton("dl_bids", "Download (.zip)", class = "btn-outline-primary")
+        ),
+        card(
+          card_header(tagList(icon("floppy-disk"), "Study file")),
+          p(class = "small text-muted",
+            "Save every setting to a file, and load it later (or on another computer) to restore them. Data files aren't included: load them again in step 1."),
+          downloadButton("dl_study", "Save settings (.json)", class = "btn-outline-primary mb-2"),
+          fileInput("study_file", NULL, buttonLabel = "Load settings…", accept = ".json", placeholder = "study .json")
+        )
       ),
       layout_columns(
         col_widths = c(4, 8),
@@ -834,9 +869,12 @@ server <- function(input, output, session) {
       baseline = input$baseline, baseline_event = input$baseline_event,
       baseline_dur = input$baseline_dur, baseline_window = c(input$bw_start, input$bw_end),
       baseline_method = input$baseline_method,
+      baseline_stat = if (is.null(input$baseline_stat)) "median" else input$baseline_stat,
       timelock = input$timelock, timelock_event = input$timelock_event,
       window = c(input$win_start, input$win_end),
-      bin_length = input$bin_length, group_cols = input$group_cols
+      bin_length = input$bin_length, group_cols = input$group_cols,
+      resample = isTRUE(input$resample),
+      target_rate = if (identical(input$rate_target, "set")) input$target_rate else NA
     )
   })
 
@@ -1600,6 +1638,121 @@ server <- function(input, output, session) {
   )
 
   # Every column of every dataset available now, with a description
+  # ---- QC reports and BIDS-like export ----------------------------------
+  observeEvent(result(), {
+    subs <- sort(unique(as.character(result()$quality$subject)))
+    updateSelectInput(session, "qc_subject", choices = c("All participants (.zip)" = "", subs))
+  })
+
+  output$dl_qc <- downloadHandler(
+    filename = function() {
+      if (nzchar(input$qc_subject)) paste0("qc_report_", bids_label(input$qc_subject), ".html")
+      else paste0(stamp("qc_reports"), ".zip")
+    },
+    content = function(file) {
+      res <- result()
+      validate(need(!is.null(res), "Run the pipeline first."))
+      meta <- list(app_version = app_version, gazer_version = gazer_version)
+      if (nzchar(input$qc_subject)) {
+        writeLines(qc_report_html(res, std(), input$qc_subject, meta), file)
+      } else {
+        dir <- tempfile("gazer_qc_"); dir.create(dir)
+        subs <- unique(as.character(res$quality$subject))
+        withProgress(message = "Writing QC reports", value = 0, {
+          for (i in seq_along(subs)) {
+            writeLines(qc_report_html(res, std(), subs[i], meta),
+                       file.path(dir, paste0("qc_report_", bids_label(subs[i]), ".html")))
+            incProgress(1 / length(subs))
+          }
+        })
+        zip::zip(file, files = list.files(dir), root = dir)
+      }
+    }
+  )
+
+  output$dl_bids <- downloadHandler(
+    filename = function() paste0(stamp("bids"), ".zip"),
+    content = function(file) {
+      res <- result()
+      validate(need(!is.null(res), "Run the pipeline first."))
+      root <- tempfile("gazer_bids_"); dir.create(root)
+      write_bids(root, res, std(), list(app_version = app_version, gazer_version = gazer_version),
+                 task = input$bids_task)
+      zip::zip(file, files = "derivatives", root = root)
+    }
+  )
+
+  # ---- Study file: save / restore settings ------------------------------
+  study_inputs <- list(
+    numeric = c("hz", "fillback", "fillforward", "mad_n", "hershman_smooth", "hershman_gap", "maxgap", "ma_n",
+                "lp_cutoff", "lp_order", "baseline_dur", "bw_start", "bw_end", "win_start", "win_end",
+                "bin_length", "pupil_min", "pupil_max", "rt_min", "rt_max", "rt_sd", "pl_lag", "target_rate"),
+    slider = "missingthresh",
+    radio = c("interp_type", "filter", "step_first", "baseline", "baseline_method", "baseline_stat",
+              "blink_method", "rate_mode", "asc_eye", "pl_start_mode", "rate_target"),
+    checkbox = c("use_blink_col", "use_mad", "timelock", "resample", "pl_aoi"),
+    text = c("tobii_onset", "tobii_offset", "pl_subject", "pl_start_messages", "bids_task"),
+    select = c("tracker"),
+    # These depend on the loaded data, so they are applied once data are loaded
+    data_select = c("col_subject", "col_trial", "col_time", "col_pupil", "col_blink", "col_message",
+                    "acc_col", "rt_col"),
+    data_multi = c("baseline_event", "timelock_event", "group_cols", "acc_correct")
+  )
+
+  output$dl_study <- downloadHandler(
+    filename = function() paste0(stamp("study"), ".json"),
+    content = function(file) {
+      ids <- unlist(study_inputs, use.names = FALSE)
+      vals <- lapply(stats::setNames(ids, ids), function(id) input[[id]])
+      vals <- vals[!vapply(vals, is.null, logical(1))]
+      jsonlite::write_json(list(app = "shinygazer", app_version = app_version, gazer_version = gazer_version,
+                                saved = format(Sys.time(), "%Y-%m-%dT%H:%M:%S%z"),
+                                files = if (!is.null(input$files)) input$files$name else list(),
+                                settings = vals),
+                           file, auto_unbox = TRUE, pretty = TRUE, null = "null", na = "null")
+    }
+  )
+
+  pending_study <- reactiveVal(NULL)
+
+  apply_settings <- function(st, data_dependent) {
+    for (id in intersect(study_inputs$numeric, names(st))) updateNumericInput(session, id, value = st[[id]])
+    for (id in intersect(study_inputs$slider, names(st))) updateSliderInput(session, id, value = st[[id]])
+    for (id in intersect(study_inputs$radio, names(st))) updateRadioButtons(session, id, selected = st[[id]])
+    for (id in intersect(study_inputs$checkbox, names(st))) updateCheckboxInput(session, id, value = isTRUE(st[[id]]))
+    for (id in intersect(study_inputs$text, names(st))) updateTextInput(session, id, value = st[[id]])
+    for (id in intersect(study_inputs$select, names(st))) updateSelectInput(session, id, selected = st[[id]])
+    if (data_dependent) {
+      for (id in intersect(study_inputs$data_select, names(st))) updateSelectInput(session, id, selected = st[[id]])
+      for (id in intersect(study_inputs$data_multi, names(st))) updateSelectizeInput(session, id, selected = st[[id]])
+    }
+  }
+
+  observeEvent(input$study_file, {
+    st <- tryCatch(jsonlite::read_json(input$study_file$datapath, simplifyVector = TRUE),
+                   error = function(e) NULL)
+    if (is.null(st) || !identical(st$app, "shinygazer") || is.null(st$settings)) {
+      showNotification("That doesn't look like a shiny gazeR study file.", type = "error")
+      return()
+    }
+    have_data <- !is.null(raw())
+    apply_settings(st$settings, data_dependent = have_data)
+    if (!have_data) pending_study(st$settings)
+    files <- if (length(st$files)) paste0(" Data files used: ", paste(st$files, collapse = ", "), ".") else ""
+    showNotification(paste0("Settings restored from ", input$study_file$name, ".",
+                            if (!have_data) " Column mapping, events and conditions will be applied when you load your data." else "",
+                            files), type = "message", duration = 12)
+    add_log("Loaded study settings from ", input$study_file$name, " (saved ", st$saved, ")")
+  })
+
+  # Apply data-dependent settings after the data's own choices are set up
+  observeEvent(std(), {
+    st <- pending_study()
+    req(st)
+    apply_settings(st, data_dependent = TRUE)
+    pending_study(NULL)
+  }, priority = -10)
+
   output$dl_dictionary <- downloadHandler(
     filename = function() paste0(stamp("data_dictionary"), ".csv"),
     content = function(file) {

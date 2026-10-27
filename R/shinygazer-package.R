@@ -16,6 +16,8 @@
 #' @importFrom tibble as_tibble
 #' @importFrom utils head
 #' @importFrom zip zip
+#' @importFrom ggplot2 ggplot
+#' @importFrom htmltools htmlEscape
 NULL
 
 

@@ -1,3 +1,17 @@
+# shinygazer 0.3.5
+
+* QC report: self-contained HTML per participant (or a zip of all) with
+  summary, exclusions, the signal at each step, every trial and parameters.
+* BIDS-like export: derivatives/shinygazer/sub-*/eye/ with processed time
+  series, events, blinks, binned data, trial quality and JSON metadata.
+* Study file: save all settings to .json and restore them later.
+* Optional resampling onto a uniform time grid at each participant's own
+  rate (dropped samples inserted as missing).
+
+* Baseline value: choose the median (default) or mean of the baseline period
+  (step 4). The methods paragraph names the statistic and, for the mean,
+  cites Mathôt & Vilotijević (2022). Requires gazeR >= 0.2.10.
+
 # shinygazer 0.3.4
 
 * Behavioural exclusions report percentages: the step 6 preview shows the

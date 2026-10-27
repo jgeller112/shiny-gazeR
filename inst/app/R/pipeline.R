@@ -178,49 +178,21 @@ subject_rates <- function(d) {
   dplyr::bind_rows(out)
 }
 
-# Fill rows inserted by upsampling from the real samples either side. If
-# either neighbour is missing (blink, tracker loss), the row stays NA.
-fill_inserted <- function(v, time, inserted) {
-  ins <- which(inserted)
-  orig <- which(!inserted)
-  ok <- !inserted & !is.na(v)
-  if (!length(ins) || sum(ok) < 2) return(v)
-  k <- findInterval(ins, orig)
-  prev <- ifelse(k >= 1, orig[pmax(k, 1)], NA_integer_)
-  nxt <- ifelse(k < length(orig), orig[pmin(k + 1, length(orig))], NA_integer_)
-  est <- stats::approx(time[ok], v[ok], xout = time[ins])$y
-  est[is.na(prev) | is.na(nxt) | is.na(v[prev]) | is.na(v[nxt])] <- NA
-  v[ins] <- est
-  v
-}
-
-# Upsample participants recorded below `target_hz` with gazer::upsample_gaze()
-# (gazeR >= 0.2.6: original rows unchanged, messages not copied). The
-# inserted rows' pupil/gaze values come back empty; fill them from the real
-# samples either side.
+# Upsample participants recorded below `target_hz` with gazer::resample_gaze():
+# new samples are interpolated from the recorded samples either side.
 upsample_subjects <- function(d, rates, target_hz) {
   `%>%` <- dplyr::`%>%`
   low <- rates$subject[!is.na(rates$hz) & rates$hz < target_hz]
   if (!length(low)) return(d)
-  value_cols <- intersect(c("pupil", "x", "y", "pupil_left", "pupil_right",
-                            "x_left", "y_left", "x_right", "y_right"), names(d))
-  pupil_cols <- intersect(c("pupil", "pupil_left", "pupil_right"), value_cols)
-  lo <- d[as.character(d$subject) %in% low, ]
-  up <- suppressMessages(gazer::upsample_gaze(lo, pupil_cols = pupil_cols,
-                                              gaze_cols = setdiff(value_cols, pupil_cols),
-                                              target_hz = target_hz, upsample_pupil = TRUE,
-                                              event_cols = "message"))
-  up$upsampled <- up$up_sampled
-  up$up_sampled <- NULL
+  up <- gazer::resample_gaze(d[as.character(d$subject) %in% low, ], target_hz,
+                             hz = stats::setNames(rates$hz, rates$subject))
+  up$upsampled <- up$resampled
+  up$resampled <- NULL
   if ("tracker_time" %in% names(up)) up$tracker_time[up$upsampled] <- NA
   if ("sample_rate" %in% names(up)) up$sample_rate <- target_hz
-  up <- up %>%
-    dplyr::group_by(subject, trial) %>%
-    dplyr::mutate(dplyr::across(dplyr::all_of(value_cols), ~ fill_inserted(.x, time, upsampled))) %>%
-    dplyr::ungroup()
   hi <- d[!(as.character(d$subject) %in% low), ]
   hi$upsampled <- rep(FALSE, nrow(hi))
-  dplyr::bind_rows(hi, up) %>% dplyr::arrange(subject, trial, time)
+  dplyr::bind_rows(hi, tibble::as_tibble(up)) %>% dplyr::arrange(subject, trial, time)
 }
 
 # TRUE where a sample's message is one of `events`. A sample can carry several
@@ -266,7 +238,9 @@ run_pupil_pipeline <- function(data, p, log = function(...) NULL) {
   n_tr <- nrow(dplyr::distinct(data, subject, trial))
   log("Starting with ", n_tr, " trials from ", length(subs), " participants (processed one at a time)")
   rates <- subject_rates(data)
-  if (identical(p$rate_mode, "upsample") && !anyNA(rates$hz)) {
+  if (!is.null(p$target_rate) && isTRUE(is.finite(p$target_rate))) {
+    log("Resampling all participants to ", p$target_rate, " Hz")
+  } else if (identical(p$rate_mode, "upsample") && !anyNA(rates$hz)) {
     p$target_hz <- max(rates$hz)
     low <- rates[rates$hz < p$target_hz, ]
     if (nrow(low)) log("Upsampling ", paste(sprintf("%s (%g Hz)", low$subject, low$hz), collapse = ", "),
@@ -287,7 +261,7 @@ run_pupil_pipeline <- function(data, p, log = function(...) NULL) {
     invisible(gc(verbose = FALSE))
   }
   # Settings from the first participant; counts are summarised below
-  skip <- "^(Starting|Excluding|Done|Blinks detected|Pupil outside|Dropped|Low-pass: |Binning|Sampling rate|Upsampling|Mixed)"
+  skip <- "^(Starting|Excluding|Done|Blinks detected|Pupil outside|Dropped|Low-pass: |Binning|Sampling rate|Upsampling|Downsampling|Mixed|Resampled)"
   for (m in first_log[!grepl(skip, first_log)]) log(m)
   quality <- dplyr::bind_rows(lapply(res, `[[`, "quality"))
   cleaned <- tibble::as_tibble(data.table::rbindlist(lapply(res, `[[`, "cleaned"), fill = TRUE))
@@ -349,8 +323,24 @@ run_pipeline_core <- function(data, p, log = function(...) NULL, stop_if_empty =
   rates_original <- rates
   rate_summary <- function(r) paste(sprintf("%g Hz (%d)", sort(unique(r$hz)),
                                             as.integer(table(r$hz))), collapse = ", ")
-  target <- if (!is.null(p$target_hz)) p$target_hz else max(rates$hz)
-  if (identical(p$rate_mode, "upsample") && any(rates$hz < target)) {
+  set_rate <- !is.null(p$target_rate) && isTRUE(is.finite(p$target_rate)) && p$target_rate > 0
+  target <- if (set_rate) p$target_rate else if (!is.null(p$target_hz)) p$target_hz else max(rates$hz)
+  if (set_rate) {
+    hi <- rates[rates$hz > target, ]
+    lo <- rates[rates$hz < target, ]
+    if (nrow(hi)) {
+      log("Downsampling ", paste(sprintf("%s (%g Hz)", hi$subject, hi$hz), collapse = ", "),
+          " to ", target, " Hz (averaging consecutive samples)")
+      d <- downsample_subjects(d, rates, target)
+    }
+    if (nrow(lo)) {
+      if ((1000 / target) %% 1 != 0) stop("Upsampling needs a target rate with a whole-millisecond step (e.g. 1000, 500, 250 Hz).", call. = FALSE)
+      log("Upsampling ", paste(sprintf("%s (%g Hz)", lo$subject, lo$hz), collapse = ", "), " to ", target, " Hz")
+      d <- upsample_subjects(d, rates, target)
+    }
+    if (!nrow(hi) && !nrow(lo)) log("Sampling rate: ", target, " Hz (already at the target rate)")
+    rates$hz <- target
+  } else if (identical(p$rate_mode, "upsample") && any(rates$hz < target)) {
     {
       low <- rates[rates$hz < target, ]
       log("Upsampling ", paste(sprintf("%s (%g Hz)", low$subject, low$hz), collapse = ", "),
@@ -364,6 +354,15 @@ run_pipeline_core <- function(data, p, log = function(...) NULL, stop_if_empty =
     log("Sampling rate: ", rates$hz[1], " Hz")
   }
   d$.hz <- rates$hz[match(as.character(d$subject), rates$subject)]
+
+  # 0c. Optional: resample onto a uniform time grid at each participant's own
+  # rate (like eyeris::resample()). Dropped samples are inserted as missing,
+  # so they are padded and interpolated like any other gap.
+  if (isTRUE(p$resample)) {
+    n_before <- nrow(d)
+    d <- resample_uniform(d)
+    log("Resampled onto a uniform grid: ", nrow(d) - n_before, " dropped sample(s) inserted as missing")
+  }
 
   # 1. Mark blinks / invalid samples as missing
   d$pupil[!is.na(d$pupil) & d$pupil <= 0] <- NA
@@ -538,7 +537,7 @@ run_pipeline_core <- function(data, p, log = function(...) NULL, stop_if_empty =
   value_col <- "pup_interp"
   if (p$baseline == "event") {
     if (!"message" %in% names(d)) stop("Event-based baseline needs a message column.", call. = FALSE)
-    log("Baseline: median of ", p$baseline_dur, " ms before ", event_label(p$baseline_event),
+    log("Baseline: ", if (is.null(p$baseline_stat)) "median" else p$baseline_stat, " of ", p$baseline_dur, " ms before ", event_label(p$baseline_event),
         " (", p$baseline_method, ")")
     # Mark the first selected event in each trial, so gazeR's function sees
     # exactly one baseline event per trial, then restore the messages
@@ -554,19 +553,21 @@ run_pipeline_core <- function(data, p, log = function(...) NULL, stop_if_empty =
       gazer::baseline_correction_pupil_msg(d, pupil_colname = "pup_interp",
                                            baseline_dur = p$baseline_dur,
                                            event = ".BASELINE_EVENT",
-                                           baseline_method = p$baseline_method)
+                                           baseline_method = p$baseline_method,
+                                           baseline_stat = if (is.null(p$baseline_stat)) "median" else p$baseline_stat)
     )
     d$message <- d$.orig_message
     d$.orig_message <- NULL
     d$event_offset_time <- NULL
     value_col <- "baselinecorrectedp"
   } else if (p$baseline == "window") {
-    log("Baseline: median of ", p$baseline_window[1], "-", p$baseline_window[2],
+    log("Baseline: ", if (is.null(p$baseline_stat)) "median" else p$baseline_stat, " of ", p$baseline_window[1], "-", p$baseline_window[2],
         " ms (", p$baseline_method, ")")
     d <- suppressMessages(
       gazer::baseline_correction_pupil(d, pupil_colname = "pup_interp",
                                        baseline_window = p$baseline_window,
-                                       baseline_method = p$baseline_method)
+                                       baseline_method = p$baseline_method,
+                                           baseline_stat = if (is.null(p$baseline_stat)) "median" else p$baseline_stat)
     )
     value_col <- "baselinecorrectedp"
   } else {
@@ -798,7 +799,8 @@ column_descriptions <- c(
   interp = "Pupil after interpolation, before smoothing (when interpolating first).",
   index = "Sample index used for cubic-spline interpolation.",
   pup_interp = "Pupil after interpolation and smoothing (and low-pass filtering, if used).",
-  baseline = "Baseline pupil size for the trial (median in the baseline period). For divisive correction with a fixed window: per participant.",
+  baseline = "Baseline pupil size for the trial (median or mean of the baseline period, as chosen). For divisive correction with a fixed window: per participant.",
+  resampled = "TRUE for samples inserted by resampling onto a uniform grid (dropped samples; treated as missing).",
   baselinecorrectedp = "Baseline-corrected pupil: pup_interp - baseline (subtractive) or (pup_interp - baseline) / baseline (divisive).",
   time_zero = "Time in ms relative to the time-lock event (0 = event onset).",
   timebins = "Start of the time bin (ms); samples are averaged within each bin.",
@@ -899,12 +901,21 @@ methods_paragraph <- function(res, meta) {
   rec <- if (length(hz) == 1) sprintf("Data were recorded at %s Hz", num(hz)) else
     sprintf("Data were recorded at %s", paste(vapply(hz, function(h) sprintf("%s Hz (n = %d)", num(h), sum(r0$hz == h)), ""), collapse = " and "))
   if (!is.null(meta$tracker) && nzchar(meta$tracker)) rec <- sub("^Data were recorded", paste("Data were recorded with", meta$tracker), rec)
-  if (length(hz) > 1 && identical(p$rate_mode, "upsample")) {
+  if (!is.null(p$target_rate) && isTRUE(is.finite(p$target_rate))) {
+    tr <- p$target_rate
+    parts <- character()
+    if (any(hz > tr)) parts <- c(parts, sprintf("recordings above %s Hz were downsampled by averaging consecutive samples (a bin was treated as missing if any of its samples was missing)", num(tr)))
+    if (any(hz < tr)) parts <- c(parts, sprintf("recordings below %s Hz were upsampled, with new samples linearly interpolated between adjacent recorded samples", num(tr)))
+    if (length(parts)) rec <- paste0(rec, sprintf("; all data were resampled to %s Hz: ", num(tr)), paste(parts, collapse = ", and "))
+  } else if (length(hz) > 1 && identical(p$rate_mode, "upsample")) {
     rec <- paste0(rec, sprintf("; participants recorded below %s Hz were upsampled to %s Hz, with new samples linearly interpolated between adjacent recorded samples", num(max(hz)), num(max(hz))))
   } else if (length(hz) > 1) {
     rec <- paste0(rec, "; each participant was processed at their own sampling rate")
   }
   s <- c(s, paste0(rec, "."))
+  if (isTRUE(p$resample)) {
+    s <- c(s, "Each trial was resampled onto a uniform time grid at its sampling rate, with any dropped samples treated as missing.")
+  }
   eye <- meta$eye
   pcol <- if (is.null(meta$pupil_col)) "pupil" else meta$pupil_col
   if (!isTRUE(meta$binocular)) {
@@ -977,8 +988,14 @@ methods_paragraph <- function(res, meta) {
     how <- if (p$baseline_method == "div") "dividing by" else "subtracting"
     period <- if (p$baseline == "event") sprintf("the %s ms before %s", p$baseline_dur, ev(p$baseline_event))
               else sprintf("%s–%s ms", p$baseline_window[1], p$baseline_window[2])
-    s <- c(s, sprintf("Pupil size was baseline-corrected per trial by %s the median pupil size in %s (Mathôt et al., 2018)%s.",
-                      how, period, if (p$baseline_method == "div") ", giving proportional change from baseline" else ""))
+    stat <- if (is.null(p$baseline_stat)) "median" else p$baseline_stat
+    cites <- "Mathôt et al., 2018"
+    if (stat == "mean") {
+      refs <- c(refs, mathot22 = "Mathôt, S., & Vilotijević, A. (2022). Methods in cognitive pupillometry: Design, preprocessing, and statistical analysis. *bioRxiv*. https://doi.org/10.1101/2022.02.23.481628")
+      cites <- "Mathôt et al., 2018; Mathôt & Vilotijević, 2022"
+    }
+    s <- c(s, sprintf("Pupil size was baseline-corrected per trial by %s the %s pupil size in %s (%s)%s.",
+                      how, stat, period, cites, if (p$baseline_method == "div") ", giving proportional change from baseline" else ""))
   }
   if (win) {
     w <- p$window
@@ -1015,4 +1032,212 @@ methods_paragraph <- function(res, meta) {
   refs <- c(refs, app = sprintf("Geller, J. (%s). *shiny gazeR* (Version %s) [Computer software]. https://github.com/jgeller112/shiny-gazeR",
                                 format(Sys.Date(), "%Y"), meta$app_version))
   list(text = paste(s, collapse = " "), references = unname(refs[order(names(refs) != "gazer", unname(refs))]))
+}
+
+
+# ---- Downsampling to a target rate -----------------------------------------
+
+# Participants recorded above `target_hz` are downsampled with
+# gazer::resample_gaze() (averaging consecutive samples).
+downsample_subjects <- function(d, rates, target_hz) {
+  hi <- rates$subject[!is.na(rates$hz) & rates$hz > target_hz]
+  if (!length(hi)) return(d)
+  down <- gazer::resample_gaze(d[as.character(d$subject) %in% hi, ], target_hz,
+                               hz = stats::setNames(rates$hz, rates$subject))
+  down$resampled <- NULL
+  if ("sample_rate" %in% names(down)) down$sample_rate <- target_hz
+  res <- dplyr::bind_rows(d[!(as.character(d$subject) %in% hi), ], tibble::as_tibble(down))
+  res[order(res$subject, res$trial, res$time), names(d)[names(d) %in% names(res)]]
+}
+
+# ---- Resampling onto a uniform grid ---------------------------------------
+
+# Put every trial on an evenly spaced grid at the participant's own rate
+# (.hz) with gazer::resample_gaze(), inserting dropped samples as missing.
+resample_uniform <- function(d) {
+  parts <- lapply(split(d, as.character(d$subject)), function(sd) {
+    hz <- sd$.hz[1]
+    if (!is.finite(hz) || hz <= 0 || (1000 / hz) %% 1 != 0) return(sd)  # needs whole-ms steps
+    u <- gazer::resample_gaze(sd, target_hz = hz, hz = hz)
+    if ("tracker_time" %in% names(u)) u$tracker_time[u$resampled] <- NA
+    u
+  })
+  tibble::as_tibble(dplyr::bind_rows(parts))
+}
+
+# ---- Per-participant QC report ----------------------------------------------
+
+png_base64 <- function(plot, width = 9, height = 4) {
+  f <- tempfile(fileext = ".png")
+  ggplot2::ggsave(f, plot, width = width, height = height, dpi = 110, bg = "white")
+  on.exit(unlink(f))
+  paste0("data:image/png;base64,", jsonlite::base64_enc(readBin(f, "raw", file.info(f)$size)))
+}
+
+html_table <- function(df) {
+  esc <- htmltools::htmlEscape
+  head <- paste0("<tr>", paste0("<th>", esc(names(df)), "</th>", collapse = ""), "</tr>")
+  rows <- apply(df, 1, function(r) paste0("<tr>", paste0("<td>", esc(as.character(r)), "</td>", collapse = ""), "</tr>"))
+  paste0("<table>", head, paste(rows, collapse = ""), "</table>")
+}
+
+# A self-contained HTML report (images embedded) for one participant:
+# summary, exclusions, signal at each step, every trial, and parameters.
+qc_report_html <- function(res, raw, subject, meta) {
+  `%>%` <- dplyr::`%>%`
+  sid <- as.character(subject)
+  q <- res$quality[as.character(res$quality$subject) == sid, ]
+  rawp <- raw[as.character(raw$subject) == sid, ]
+  rawp$pupil[!is.na(rawp$pupil) & rawp$pupil <= 0] <- NA
+  proc <- res$data[as.character(res$data$subject) == sid, ]
+  clean <- res$cleaned[as.character(res$cleaned$subject) == sid, ]
+  rate <- res$rates_original$hz[res$rates_original$subject == sid]
+  pct <- function(x) sprintf("%.1f%%", 100 * x)
+  kept <- q[q$reason == "kept", ]
+
+  summary <- data.frame(
+    Measure = c("Sampling rate", "Trials", "Trials kept", "Missing pupil (raw, whole recording)",
+                "Blink samples (after detection, before padding)", "Missing after cleaning (analysed trials)"),
+    Value = c(if (length(rate)) paste(rate[1], "Hz") else "?", nrow(q),
+              sprintf("%d (%s)", nrow(kept), pct(nrow(kept) / max(1, nrow(q)))),
+              pct(mean(is.na(rawp$pupil))), pct(mean(clean$blink_detected > 0, na.rm = TRUE)),
+              if (nrow(kept)) pct(mean(kept$prop_missing, na.rm = TRUE)) else "–"))
+  reasons <- as.data.frame(table(Reason = q$reason), responseName = "Trials")
+
+  plots <- character()
+  # Trial-level missing data
+  qq <- q
+  qq$status <- ifelse(qq$reason == "kept", "kept", "excluded")
+  p1 <- ggplot2::ggplot(qq[!is.na(qq$prop_missing), ], ggplot2::aes(factor(trial), prop_missing, fill = status)) +
+    ggplot2::geom_col() +
+    ggplot2::geom_hline(yintercept = res$params$missingthresh, linetype = "dashed", colour = "#c92a2a") +
+    ggplot2::scale_fill_manual(values = c(kept = "#3b5bdb", excluded = "#f08c00")) +
+    ggplot2::scale_y_continuous(labels = function(x) paste0(round(100 * x), "%")) +
+    ggplot2::labs(x = "Trial", y = "Missing (after cleaning)", fill = NULL,
+                  title = "Missing data per trial", subtitle = "Dashed line: exclusion threshold") +
+    ggplot2::theme_minimal(base_size = 10) +
+    ggplot2::theme(axis.text.x = ggplot2::element_text(size = 6, angle = 90))
+  plots <- c(plots, png_base64(p1, 9, 3.2))
+
+  if (nrow(proc)) {
+    tv <- if (!is.null(res$timevar) && res$timevar %in% names(proc)) res$timevar else "time"
+    step <- 50
+    mk <- function(df, col, label, t) {
+      df$bin <- round(df[[t]] / step) * step
+      df %>% dplyr::group_by(bin) %>% dplyr::summarise(value = mean(.data[[col]], na.rm = TRUE), .groups = "drop") %>%
+        dplyr::mutate(step = label)
+    }
+    keys <- unique(paste(proc$subject, proc$trial))
+    rawk <- rawp[paste(rawp$subject, rawp$trial) %in% keys, ]
+    cleank <- clean[paste(clean$subject, clean$trial) %in% keys, ]
+    shift <- proc %>% dplyr::distinct(trial, .keep_all = TRUE)
+    if (tv == "time_zero") {
+      off <- proc %>% dplyr::group_by(trial) %>% dplyr::summarise(off = dplyr::first(time - time_zero), .groups = "drop")
+      rawk$time_zero <- rawk$time - off$off[match(rawk$trial, off$trial)]
+      cleank$time_zero <- cleank$time - off$off[match(cleank$trial, off$trial)]
+      rng <- range(proc$time_zero)
+      rawk <- rawk[rawk$time_zero >= rng[1] & rawk$time_zero <= rng[2], ]
+      cleank <- cleank[cleank$time_zero >= rng[1] & cleank$time_zero <= rng[2], ]
+    }
+    steps <- dplyr::bind_rows(mk(rawk, "pupil", "1. Raw", tv), mk(cleank, "extendpupil", "2. Blinks/artifacts removed", tv),
+                              mk(proc, "pup_interp", "3. Interpolated + smoothed", tv))
+    p2 <- ggplot2::ggplot(steps, ggplot2::aes(bin, value, colour = step)) +
+      ggplot2::geom_line(linewidth = 0.8) +
+      ggplot2::scale_colour_manual(values = c("#adb5bd", "#3b5bdb", "#e8590c")) +
+      ggplot2::labs(x = "Time (ms)", y = "Pupil size", colour = NULL, title = "Average across kept trials at each step") +
+      ggplot2::theme_minimal(base_size = 10) + ggplot2::theme(legend.position = "bottom")
+    plots <- c(plots, png_base64(p2, 9, 3.6))
+    p3 <- ggplot2::ggplot(mk(proc, "baselinecorrectedp", "baseline-corrected", tv), ggplot2::aes(bin, value)) +
+      ggplot2::geom_hline(yintercept = 0, colour = "grey70") + ggplot2::geom_line(colour = "#2f9e44", linewidth = 0.9) +
+      ggplot2::labs(x = "Time (ms)", y = "Change from baseline", title = "Baseline-corrected pupil (average of kept trials)") +
+      ggplot2::theme_minimal(base_size = 10)
+    plots <- c(plots, png_base64(p3, 9, 3))
+    # Every trial: raw vs processed
+    tr <- head(sort(unique(rawp$trial)), 60)
+    rr <- rawp[rawp$trial %in% tr, c("trial", "time", "pupil")]
+    pp <- proc[proc$trial %in% tr, c("trial", "time", "pup_interp")]
+    p4 <- ggplot2::ggplot() +
+      ggplot2::geom_line(data = rr, ggplot2::aes(time, pupil), colour = "#adb5bd", linewidth = 0.3) +
+      ggplot2::geom_line(data = pp, ggplot2::aes(time, pup_interp), colour = "#e8590c", linewidth = 0.4) +
+      ggplot2::facet_wrap(~ trial, scales = "free", ncol = 6) +
+      ggplot2::labs(x = "Time (ms)", y = "Pupil", title = "Each trial: raw (grey) and processed (orange; kept trials only)") +
+      ggplot2::theme_minimal(base_size = 7) + ggplot2::theme(axis.text = ggplot2::element_blank())
+    plots <- c(plots, png_base64(p4, 10, max(3, ceiling(length(tr) / 6) * 1.1)))
+  }
+
+  prm <- res$params
+  prm <- prm[!vapply(prm, is.null, logical(1))]
+  params <- data.frame(Setting = names(prm), Value = vapply(prm, function(v) paste(v, collapse = ", "), ""))
+  esc <- htmltools::htmlEscape
+  paste0('<!doctype html><html><head><meta charset="utf-8"><title>QC report: ', esc(sid), '</title>
+<style>body{font-family:system-ui,-apple-system,Segoe UI,sans-serif;max-width:1000px;margin:2rem auto;padding:0 1rem;color:#212529}
+h1{font-size:1.6rem}h2{font-size:1.15rem;margin-top:2rem;border-bottom:1px solid #dee2e6;padding-bottom:.3rem}
+table{border-collapse:collapse;font-size:.85rem;margin:.5rem 0}td,th{border:1px solid #dee2e6;padding:.3rem .6rem;text-align:left}
+th{background:#f1f3f5}img{max-width:100%;margin:.5rem 0}.muted{color:#868e96;font-size:.85rem}</style></head><body>',
+    '<h1>shiny gazeR QC report: ', esc(sid), '</h1>',
+    '<p class="muted">Generated ', format(Sys.time(), "%Y-%m-%d %H:%M"), ' with shiny gazeR ', esc(meta$app_version),
+    ' and gazeR ', esc(meta$gazer_version), '.</p>',
+    '<h2>Summary</h2>', html_table(summary),
+    '<h2>Trials by outcome</h2>', html_table(reasons),
+    '<h2>Plots</h2>', paste0('<img src="', plots, '">', collapse = ""),
+    '<h2>Parameters</h2>', html_table(params),
+    '</body></html>')
+}
+
+# ---- BIDS-like export --------------------------------------------------------
+
+bids_label <- function(x) gsub("[^A-Za-z0-9]", "", sub("\\.(edf|asc)(\\.gz)?$", "", as.character(x), ignore.case = TRUE))
+
+# Write a BIDS-like derivatives folder (eyeris-style) under `root`.
+write_bids <- function(root, res, raw, meta, task = "task") {
+  `%>%` <- dplyr::`%>%`
+  task <- bids_label(task)
+  if (!nzchar(task)) task <- "task"
+  deriv <- file.path(root, "derivatives", "shinygazer")
+  dir.create(deriv, recursive = TRUE, showWarnings = FALSE)
+  jsonlite::write_json(list(Name = "shiny gazeR pupil pre-processing", BIDSVersion = "1.9.0",
+                            DatasetType = "derivative",
+                            GeneratedBy = list(list(Name = "shinygazer", Version = meta$app_version,
+                                                    CodeURL = "https://github.com/jgeller112/shiny-gazeR"),
+                                               list(Name = "gazer", Version = meta$gazer_version))),
+                       file.path(deriv, "dataset_description.json"), auto_unbox = TRUE, pretty = TRUE)
+  prm <- res$params
+  prm$maxgap <- if (is.infinite(prm$maxgap)) NULL else prm$maxgap
+  jsonlite::write_json(list(parameters = prm, created = format(Sys.time(), "%Y-%m-%dT%H:%M:%S%z")),
+                       file.path(deriv, "metadata.json"), auto_unbox = TRUE, pretty = TRUE, null = "null")
+  dict <- data_dictionary(list(processed = res$data))
+  for (sid in unique(as.character(res$quality$subject))) {
+    lab <- bids_label(sid)
+    d <- file.path(deriv, paste0("sub-", lab), "eye")
+    dir.create(d, recursive = TRUE, showWarnings = FALSE)
+    stem <- file.path(d, paste0("sub-", lab, "_task-", task))
+    proc <- res$data[as.character(res$data$subject) == sid, ]
+    rw <- raw[as.character(raw$subject) == sid, ]
+    cl <- res$cleaned[as.character(res$cleaned$subject) == sid, ]
+    if (nrow(proc)) data.table::fwrite(proc, paste0(stem, "_desc-preproc_timeseries.csv"))
+    if ("message" %in% names(rw)) {
+      ev <- rw[!is.na(rw$message), intersect(c("subject", "trial", "time", "tracker_time", "message"), names(rw))]
+      data.table::fwrite(ev, paste0(stem, "_events.csv"))
+    }
+    if (nrow(cl)) {
+      bl <- cl %>% dplyr::arrange(trial, time) %>% dplyr::group_by(trial) %>%
+        dplyr::mutate(run = cumsum(c(1, diff(blink_detected > 0) != 0))) %>%
+        dplyr::filter(blink_detected > 0) %>% dplyr::group_by(trial, run) %>%
+        dplyr::summarise(start = min(time), end = max(time), .groups = "drop") %>%
+        dplyr::mutate(duration_ms = end - start) %>% dplyr::select(-run)
+      data.table::fwrite(bl, paste0(stem, "_blinks.csv"))
+    }
+    if (!is.null(res$binned) && "subject" %in% names(res$binned)) {
+      b <- res$binned[as.character(res$binned$subject) == sid, ]
+      if (nrow(b)) data.table::fwrite(b, paste0(stem, "_desc-binned_pupil.csv"))
+    }
+    data.table::fwrite(res$quality[as.character(res$quality$subject) == sid, ], paste0(stem, "_desc-quality_trials.csv"))
+    rate <- res$rates$hz[res$rates$subject == sid]
+    cols <- stats::setNames(as.list(dict$description), dict$column)
+    jsonlite::write_json(list(SamplingFrequency = if (length(rate)) rate[1] else NULL,
+                              RecordedSamplingFrequency = res$rates_original$hz[res$rates_original$subject == sid][1],
+                              TaskName = task, Columns = cols),
+                         paste0(stem, "_desc-preproc_timeseries.json"), auto_unbox = TRUE, pretty = TRUE, null = "null")
+  }
+  invisible(deriv)
 }

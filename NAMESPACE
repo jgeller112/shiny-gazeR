@@ -10,6 +10,8 @@ importFrom(gazer,
   extend_blinks,
   read_asc
 )
+importFrom(ggplot2,ggplot)
+importFrom(htmltools,htmlEscape)
 importFrom(jsonlite,write_json)
 importFrom(markdown,mark_html)
 importFrom(plotly,plot_ly)

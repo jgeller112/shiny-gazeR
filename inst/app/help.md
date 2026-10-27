@@ -84,8 +84,9 @@ The log and the parameters file record each participant's rate and which option 
   *Order* (interpolate first or smooth first) applies to moving average and Hanning.
 
 ### 4 · Baseline & time-lock
-- **Before an event**: the median of the *N* ms before the chosen message, per trial.
-- **Fixed window**: the median between two time stamps, per trial for subtractive correction. Divisive correction with a fixed window uses a per-subject baseline.
+- **Before an event**: the median or mean of the *N* ms before the chosen message, per trial.
+- **Fixed window**: the baseline between two time stamps, per trial for subtractive correction. Divisive correction with a fixed window uses a per-subject baseline.
+- **Baseline value: Median or Mean.** The median (gazeR's default) or the mean of the pupil in the baseline period. Mathôt & Vilotijević (2022) recommend subtractive correction, per trial, using the mean of a short baseline period.
 - **Subtractive** gives change in tracker units; **divisive** gives proportional change. Mathôt et al. (2018) recommend subtractive.
 - **Events:** the baseline and time-lock settings each accept **one or more** events. Each trial uses the first selected event it contains, so tasks whose trials start with different messages (e.g. `LONG_TRIAL_START` and `SHORT_TRIAL_START`) keep all their trials. The app pre-selects every start/onset-type event it finds.
 - **Time-locking** drops trials that contain none of the selected events. The Quality tab gives the reason.
@@ -141,6 +142,30 @@ The *Plotted values* table and download contain exactly what is drawn.
 - **Raw combined:** the data as loaded, one row per sample, with event messages, trial variables and any behavioural columns joined, before any cleaning. For EyeLink files this is what `read_asc()` returns.
 - **Processed samples:** after the full pipeline.
 - **Binned:** the Group-by table.
+
+## Reports, BIDS-like export and study files
+
+On the Export tab:
+
+- **QC report.** A self-contained HTML file per participant, or a zip of all of them. It contains:
+  - a summary (sampling rate, trials kept, missing data and blinks);
+  - trial outcomes, and missing data per trial with the exclusion threshold;
+  - the average signal after each step (raw → blinks removed → interpolated and smoothed), and the baseline-corrected average;
+  - a small plot of every trial;
+  - all parameters.
+- **BIDS-like export.** A zip of `derivatives/shinygazer/`:
+  - `dataset_description.json` and `metadata.json`, with every setting;
+  - for each participant, `sub-<id>/eye/sub-<id>_task-<task>_…`: processed time series (`desc-preproc_timeseries.csv` plus a JSON sidecar with sampling rate and column descriptions), `events.csv`, `blinks.csv` (start, end, duration), binned data and trial quality.
+- **Study file.** *Save settings* writes every setting to a `.json` file; *Load settings* restores them. Data files aren't included, so load them again in step 1. Settings that depend on your data (column mapping, events, conditions) are applied once the data are loaded.
+
+## Resampling
+Two separate options in step 1:
+
+- **Resample all to __ Hz** brings every participant to one sampling rate.
+  - **Higher rates are downsampled** by averaging consecutive samples into bins (e.g. 2 ms bins for 500 Hz). Averaging rather than dropping samples avoids aliasing. A bin with any missing sample stays missing, a bin is a blink if any of its samples was, and every event message is kept on its bin.
+  - **Lower rates are upsampled** with `upsample_gaze()`, new samples interpolated from the recorded samples either side.
+  - The log and methods paragraph report it.
+- **Fill dropped samples (uniform grid)** keeps each participant's rate. It puts each trial on an evenly spaced grid and inserts any samples the tracker dropped as missing. EyeLink files are normally already evenly spaced.
 
 ## Data dictionary
 
