@@ -12,7 +12,7 @@ if (FALSE) {
   library(shiny); library(bslib); library(plotly); library(DT); library(jsonlite)
   library(markdown); library(data.table); library(dplyr); library(tibble); library(zoo)
   library(ggplot2); library(purrr); library(readr); library(signal)
-  library(stringr); library(tidyr); library(zip)
+  library(stringr); library(tidyr); library(zip); library(lme4)
 }
 
 library(shinygazer)

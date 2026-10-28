@@ -148,6 +148,16 @@ The plots are computed from the processed samples, separately from Group by, so 
 
 The *Plotted values* table and download contain exactly what is drawn.
 
+### Cluster-based permutation test
+Below the time course, **Cluster-based permutation test** asks *where in time* the levels of a condition differ, while controlling false positives across time bins (Maris & Oostenveld, 2007):
+
+1. In every time bin (the plot bin), a linear mixed model is fit with lme4: `pupil ~ condition + (1 | subject)`, on **subject means** (one value per subject, condition and bin) or on **trials** (every trial, optionally with `(1 | item)` too; slower but uses all trials).
+2. Adjacent bins where |t| is above the two-sided critical value for alpha (1.96 for .05) form a cluster; its **mass** is the sum of its t values. (Conditions with more than two levels use F.)
+3. The condition labels are shuffled within each participant (across participants for a between-subject condition), keeping each unit's whole time course, and the largest cluster mass is recorded for each permutation.
+4. A cluster's **p** is the proportion of permutations with a cluster at least as large.
+
+The figure shows each condition's time course (within-subject SE) with the clusters as bars underneath: dark and labelled if significant, grey otherwise. The table lists every cluster, a methods sentence describes the test and its results, and both download. Each permutation fits a model in every bin, so 1000 permutations can take minutes (longer in the browser). With **Eye: Both**, test one eye at a time, or choose *eye* as the condition to compare the eyes.
+
 ## Outputs
 
 | File | Contents |

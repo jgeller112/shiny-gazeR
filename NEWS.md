@@ -1,5 +1,11 @@
 # shinygazer 0.3.6
 
+* Results: multilevel cluster-based permutation test (Maris & Oostenveld,
+  2007). A mixed model per time bin (subject means or trials, optional item
+  intercept), labels shuffled within subjects, cluster p-values; figure with
+  the condition time courses and clusters underneath, cluster table,
+  methods sentence and downloads. Needs lme4 (now suggested and bundled
+  with the browser version).
 * Eye = Both now processes the left and right eye separately, for comparing
   the eyes: identical settings, the same blink mask (either eye), optionally
   the same missing samples, and only trials that pass for both eyes. Results

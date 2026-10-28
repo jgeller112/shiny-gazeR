@@ -1430,6 +1430,7 @@ server <- function(input, output, session) {
       card(card_header(textOutput("results_title", inline = TRUE)),
            plotly::plotlyOutput("results_plot", height = "480px"),
            card_footer(class = "small text-muted", textOutput("results_note", inline = TRUE))),
+      cpt_card(),
       layout_columns(
         col_widths = c(6, 6),
         card(card_header("Plotted values"),
@@ -1439,6 +1440,155 @@ server <- function(input, output, session) {
       )
     )
   })
+
+  # ---- Cluster-based permutation test -----------------------------------
+  cpt_card <- function() {
+    keep <- function(id, default) { v <- isolate(input[[id]]); if (is.null(v)) default else v }
+    conds <- condition_choices()
+    if (isTRUE(result()$eyes)) conds <- unique(c("eye", conds))
+    p <- result()$params
+    win <- if (isTRUE(p$timelock)) c(0, if (is.na(p$window[2])) NA else p$window[2]) else c(NA, NA)
+    card(
+      card_header(tagList(icon("layer-group"), " Cluster-based permutation test")),
+      p(class = "small text-muted",
+        "Where in time do the conditions differ? A mixed model is fit in every time bin (plot bin above); ",
+        "adjacent bins past the threshold form clusters, and each cluster's summed statistic is compared with ",
+        "the largest cluster found when the condition labels are shuffled within subjects (Maris & Oostenveld, 2007)."),
+      layout_columns(
+        col_widths = c(3, 3, 2, 2, 2), gap = "0.75rem",
+        selectInput("cpt_cond", "Condition", conds, selected = keep("cpt_cond", intersect(input$plot_conds, conds)[1])),
+        radioButtons("cpt_model", info("Model", "Subject means: one value per subject, condition and bin, with a random intercept per subject. Trials: every trial, with random intercepts per subject (and item, if chosen); slower."),
+                     c("Subject means" = "subject", "Trials" = "trial"), selected = keep("cpt_model", "subject")),
+        numericInput("cpt_from", "From (ms)", keep("cpt_from", win[1])),
+        numericInput("cpt_to", "To (ms)", keep("cpt_to", win[2])),
+        numericInput("cpt_nperm", info("Permutations", "1000 or more for publication. Each one fits a model in every time bin, so this can take minutes (longer in the browser)."),
+                     keep("cpt_nperm", 1000), min = 10, step = 100)
+      ),
+      layout_columns(
+        col_widths = c(3, 3, 2, 4), gap = "0.75rem",
+        conditionalPanel("input.cpt_model == 'trial'",
+                         selectInput("cpt_item", "Item random intercept", c("(none)" = "", condition_choices(), numeric_choices()),
+                                     selected = keep("cpt_item", ""))),
+        if (isTRUE(result()$eyes)) conditionalPanel("input.cpt_cond != 'eye'",
+                         radioButtons("cpt_eye", "Eye", c(Left = "left", Right = "right"),
+                                      selected = keep("cpt_eye", "left"), inline = TRUE)) else div(),
+        numericInput("cpt_alpha", info("Alpha", "Cluster-forming threshold: |t| above the two-sided critical value (1.96 for .05); also the significance level for clusters."),
+                     keep("cpt_alpha", 0.05), min = 0.001, max = 0.5, step = 0.01),
+        div(class = "mt-4", actionButton("cpt_run", "Run test", icon = icon("play"), class = "btn-primary"))
+      ),
+      uiOutput("cpt_output")
+    )
+  }
+
+  cpt_res <- reactiveVal(NULL)
+  observeEvent(result(), cpt_res(NULL))
+
+  observeEvent(input$cpt_run, {
+    res <- result()
+    req(res, input$cpt_cond, input$plot_bin)
+    cond <- input$cpt_cond
+    if (!requireNamespace("lme4", quietly = TRUE)) {
+      showNotification("The cluster test needs the lme4 package: install.packages(\"lme4\").", type = "error", duration = 10)
+      return()
+    }
+    d <- res$data
+    if (isTRUE(res$eyes) && cond != "eye") d <- d[d$eye == input$cpt_eye, ]
+    vc <- if (is.null(res$value_col)) "baselinecorrectedp" else res$value_col
+    tv <- res$timevar
+    bin <- input$plot_bin
+    d$timebins <- round(d[[tv]] / bin) * bin
+    if (isTRUE(is.finite(input$cpt_from))) d <- d[d$timebins >= input$cpt_from, ]
+    if (isTRUE(is.finite(input$cpt_to))) d <- d[d$timebins <= input$cpt_to, ]
+    item <- if (identical(input$cpt_model, "trial") && isTRUE(nzchar(input$cpt_item))) input$cpt_item
+    keys <- unique(c("subject", "trial", if (cond == "eye") "eye", item))
+    x <- data.frame(subject = as.character(d$subject), trial = d$trial, condition = d[[cond]],
+                    pupil = d[[vc]], timebins = d$timebins)
+    if (cond == "eye") x$eye <- d$eye
+    if (!is.null(item)) x$item <- as.character(d[[item]])
+    x <- x[!is.na(x$condition) & !is.na(x$pupil), ]
+    if (length(unique(x$condition)) < 2) {
+      showNotification("The condition needs at least two levels in the data.", type = "error")
+      return()
+    }
+    n_sub <- length(unique(x$subject))
+    unit <- if (identical(input$cpt_model, "trial")) c("subject", "trial", if (cond == "eye") "eye") else c("subject", "condition")
+    if (identical(input$cpt_model, "subject")) {
+      x <- stats::aggregate(pupil ~ subject + condition + timebins, data = x, FUN = mean)
+    }
+    re <- c(if (n_sub > 1) "(1 | subject)", if (!is.null(item)) "(1 | item)")
+    f <- stats::as.formula(paste("pupil ~ condition", if (length(re)) paste("+", paste(re, collapse = " + "))))
+    if (n_sub == 1 && identical(input$cpt_model, "subject")) {
+      showNotification("With one participant, use the Trials model.", type = "error")
+      return()
+    }
+    n_perm <- max(10, round(input$cpt_nperm))
+    out <- withProgress(message = "Cluster permutation test", value = 0, {
+      tryCatch(
+        cluster_permutation(x, f, perm_var = "condition", unit = unit, n_perm = n_perm,
+                            alpha = input$cpt_alpha, seed = 1,
+                            progress = function(k, n) if (k %% max(1, n %/% 50) == 0) setProgress(k / n, detail = paste(k, "of", n)),
+                            labels = list(response = y_label(), condition = cond)),
+        error = function(e) { showNotification(conditionMessage(e), type = "error", duration = 10); NULL })
+    })
+    req(out)
+    out$bin <- bin
+    out$eye <- if (isTRUE(res$eyes) && cond != "eye") input$cpt_eye
+    out$model_label <- paste0(if (identical(input$cpt_model, "trial")) "trial-level" else "subject-mean", " data, ",
+                              deparse(f))
+    cpt_res(out)
+    add_log("Cluster permutation test: ", cond, ", ", out$model_label, ", ", n_perm, " permutations; ",
+            sum(out$clusters$p < input$cpt_alpha), " significant cluster(s)")
+  })
+
+  output$cpt_output <- renderUI({
+    r <- cpt_res()
+    if (is.null(r)) return(p(class = "small text-muted mt-2", "Choose the settings and click Run test."))
+    tagList(
+      plotOutput("cpt_plot", height = "420px"),
+      DT::DTOutput("cpt_table"),
+      p(class = "small mt-2", textOutput("cpt_methods", inline = TRUE)),
+      div(class = "d-flex gap-2",
+          downloadButton("dl_cpt_png", "Figure (.png)", class = "btn-sm btn-outline-primary"),
+          downloadButton("dl_cpt_csv", "Clusters (.csv)", class = "btn-sm btn-outline-primary"))
+    )
+  })
+  cpt_plot_obj <- reactive({
+    r <- cpt_res(); req(r)
+    plot_cluster_perm(r, alpha = input$cpt_alpha) +
+      ggplot2::labs(title = if (!is.null(r$eye)) paste(tools::toTitleCase(r$eye), "eye"))
+  })
+  output$cpt_plot <- renderPlot(cpt_plot_obj(), res = 96)
+  output$cpt_table <- DT::renderDT({
+    r <- cpt_res(); req(r)
+    cl <- as.data.frame(r$clusters)
+    cl$significant <- ifelse(cl$p < input$cpt_alpha, "yes", "no")
+    DT::datatable(cl, rownames = FALSE, options = list(dom = "t", pageLength = 50),
+                  colnames = c("Cluster", "Start (ms)", "End (ms)", "Bins", "Mass", "Sign", "p", "Significant")) |>
+      DT::formatRound(c("mass", "p"), 3)
+  })
+  output$cpt_methods <- renderText({
+    r <- cpt_res(); req(r)
+    sig <- r$clusters[r$clusters$p < input$cpt_alpha, ]
+    found <- if (nrow(sig)) paste0("The conditions differed from ",
+                                   paste(sprintf("%g to %g ms (cluster mass = %.2f, p = %s)", sig$start, sig$end, sig$mass,
+                                                 sub("^0", "", sprintf("%.3f", sig$p))), collapse = " and from "), ".")
+             else "No cluster was significant."
+    paste0("Differences between levels of ", r$cond_label, " were tested with a cluster-based permutation test ",
+           "(Maris & Oostenveld, 2007). In each ", r$bin, " ms bin, a linear mixed model (",
+           gsub("\\bcondition\\b", r$cond_label, deparse(r$formula)),
+           ", lme4) was fit to ", sub(", .*", "", r$model_label), "; adjacent bins with |", r$statistic, "| > ",
+           sprintf("%.2f", r$threshold), " formed clusters, and each cluster's summed ", r$statistic,
+           " was compared with the largest cluster mass in each of ", r$n_perm,
+           " permutations of the condition labels ", if (r$within) "within participants" else "across participants", ". ", found)
+  })
+  output$dl_cpt_png <- downloadHandler(
+    filename = function() paste0(stamp("cluster_test"), ".png"),
+    content = function(file) ggplot2::ggsave(file, cpt_plot_obj(), width = 8, height = 5, dpi = 300, bg = "white")
+  )
+  output$dl_cpt_csv <- downloadHandler(
+    filename = function() paste0(stamp("cluster_test"), ".csv"),
+    content = function(file) data.table::fwrite(cpt_res()$clusters, file)
+  )
 
   plot_bins <- reactive({
     req(result(), input$plot_bin)

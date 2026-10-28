@@ -33,6 +33,8 @@ Imports:
     utils,
     zip,
     zoo
+Suggests:
+    lme4
 Remotes:
     dmirman/gazer
 Encoding: UTF-8
