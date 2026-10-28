@@ -916,6 +916,8 @@ column_descriptions <- c(
   timebins = "Start of the time bin (ms); samples are averaged within each bin.",
   aggbaseline = "Mean baseline-corrected pupil in the time bin.",
   samples = "Number of samples in the trial (inside the analysis window when time-locked).",
+  pupil_icc = "Binocular 'Both' only: left-right pupil agreement in the trial as loaded, intraclass correlation ICC(A,1) over samples with both eyes valid (gazer::pupil_cor). Lower when one eye reads larger.",
+  pupil_r = "Binocular 'Both' only: left-right pupil correlation in the trial as loaded, over samples with both eyes valid (gazer::pupil_cor). Do the eyes rise and fall together?",
   prop_missing = "Proportion of samples missing after blink and artifact removal (inside the analysis window when time-locked).",
   subject_prop_missing = "Proportion of the participant's samples missing, pooled across all their analysable trials (inside the analysis window when time-locked).",
   reason = "Why the trial was excluded, or 'kept'.",
@@ -948,6 +950,16 @@ data_dictionary <- function(datasets) {
 }
 
 # ---- Missing data and blinks by eye -------------------------------------
+
+# Per trial: left-right pupil ICC and correlation in the data as loaded
+# (gazer::pupil_cor), or NULL without both eyes
+trial_eye_agreement <- function(d) {
+  if (!all(c("pupil_left", "pupil_right") %in% names(d))) return(NULL)
+  r <- gazer::pupil_cor(as.data.frame(d[c("subject", "trial", "pupil_left", "pupil_right")]),
+                        by = "trial", summary = TRUE)
+  r$subject <- as.character(r$subject)
+  r[c("subject", "trial", "pupil_icc", "pupil_r")]
+}
 
 # Per participant and eye: % of samples missing, % in a blink, % missing
 # outside blinks (tracker loss), and trials that are mostly missing. With
@@ -984,11 +996,13 @@ eye_summary <- function(d, single_label = "pupil") {
                        .groups = "drop")
   })
   out <- dplyr::bind_rows(rows) %>% dplyr::arrange(subject, eye)
-  # Left-right pupil correlation per participant (gazer::pupil_cor), a check
-  # that averaging the eyes is safe
+  # Left-right pupil agreement per participant (gazer::pupil_cor: ICC and
+  # rmcorr over whole trials), a check that averaging the eyes is safe
   if (all(c("pupil_left", "pupil_right") %in% names(d))) {
-    r <- gazer::pupil_cor(as.data.frame(d[c("subject", "pupil_left", "pupil_right")]), summary = TRUE)
-    out$pupil_r <- r$pupil_r[match(as.character(out$subject), as.character(r$subject))]
+    r <- gazer::pupil_cor(as.data.frame(d[c("subject", "trial", "pupil_left", "pupil_right")]), summary = TRUE)
+    m <- match(as.character(out$subject), as.character(r$subject))
+    out$pupil_icc <- r$pupil_icc[m]
+    out$pupil_r <- r$pupil_r[m]
   }
   out
 }

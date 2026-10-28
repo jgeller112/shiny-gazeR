@@ -65,7 +65,7 @@ The Data tab (and the Quality tab) shows, for each participant, how much of the 
 - **Blink:** samples inside a tracker-flagged blink.
 - **Missing outside blinks:** tracker loss (e.g. the eye wasn't found).
 - **Trials >50% missing:** trials that are mostly missing.
-- **L–R pupil r** (with **Both**): the correlation between the left and right pupil over samples where both are valid (`gazeR::pupil_cor()`). The two pupils move together, so this is usually above .9. A lower value (shown in red) means one eye was tracked poorly; averaging the eyes would mix in that noise, so reload with the better eye.
+- **L–R pupil ICC** and **L–R pupil r** (with **Both**): how well the left and right pupil agree over whole trials, on samples where both are valid, with trial means removed so trial-to-trial changes in pupil size don't inflate them (`gazeR::pupil_cor()`). **r** is a repeated-measures correlation (rmcorr): do the eyes rise and fall together? **ICC** (agreement) also asks whether they read the same size, so it is lower when one eye reads consistently larger. Both are usually above .9. If both are low (shown in red), one eye was tracked poorly; averaging the eyes would mix in that noise, so reload with the better eye. If only the ICC is low, the eyes move together but differ in size, which causes small steps where the average switches to the one valid eye.
 
 With **Both**, there are separate rows for the left eye, the right eye and their average. The average is the monocular mean, so it is missing only when both eyes are, and its blink is 1 if either eye blinks. With **Left**, **Right** or **Average**, there is one row for that choice. If one eye is much worse than the other (e.g. lost for whole trials), reload with the better eye.
 
@@ -262,6 +262,7 @@ The raw columns for retained trials, plus:
 | `subject_prop_missing` | Proportion of the participant's samples missing, pooled across trials (inside the analysis window when time-locked) |
 | `reason` | Why the trial was excluded, or `kept` |
 | `excluded` | `TRUE` if excluded |
+| `pupil_icc`, `pupil_r` | Binocular **Both** only: left-right pupil agreement (ICC) and correlation (r) in the trial as loaded, over samples where both eyes are valid. Below .9 is shown in red in the Quality tab |
 
 ### Plotted values (Results tab)
 | Column | Meaning |

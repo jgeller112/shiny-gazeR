@@ -1,5 +1,10 @@
 # shinygazer 0.3.7
 
+* Data tab, binocular (Both): the eye table shows the left-right pupil ICC
+  (agreement) and repeated-measures correlation (rmcorr) per participant,
+  over whole trials with trial means removed (gazer >= 0.2.14). The
+  Quality tab's trial table and the Trial quality download give both per
+  trial.
 * Data tab: a "Resampled only" download gives the combined data with just
   the step 1 resampling applied (Resample all to, upsampling mixed rates,
   or Fill dropped samples) and no other pre-processing, without running

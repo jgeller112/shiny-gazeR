@@ -870,15 +870,15 @@ server <- function(input, output, session) {
     tbl <- DT::datatable(e, rownames = FALSE, filter = "top",
                   colnames = c("Subject", "Eye", "Samples", "Missing", "Blink",
                                "Missing outside blinks", "Trials", "Trials >50% missing",
-                               if (has_r) "L–R pupil r"),
+                               if (has_r) c("L–R pupil ICC", "L–R pupil r")),
                   options = list(pageLength = 10, dom = "tip", scrollX = TRUE)) |>
       DT::formatPercentage(c("missing", "blink", "tracker_loss"), 1) |>
       DT::formatStyle("missing", target = "row",
                       backgroundColor = DT::styleInterval(0.3, c("transparent", "rgba(240,140,0,.28)")))
     if (has_r) {
       tbl <- tbl |>
-        DT::formatRound("pupil_r", 3) |>
-        DT::formatStyle("pupil_r", color = DT::styleInterval(0.9, c("#c92a2a", "inherit")),
+        DT::formatRound(c("pupil_icc", "pupil_r"), 3) |>
+        DT::formatStyle(c("pupil_icc", "pupil_r"), color = DT::styleInterval(0.9, c("#c92a2a", "inherit")),
                         fontWeight = DT::styleInterval(0.9, c("bold", "normal")))
     }
     tbl
@@ -994,6 +994,11 @@ server <- function(input, output, session) {
                       NULL
                     })
     req(res)
+    agree <- trial_eye_agreement(d)
+    if (!is.null(agree)) {
+      res$quality$subject <- as.character(res$quality$subject)
+      res$quality <- dplyr::left_join(res$quality, agree, by = c("subject", "trial"))
+    }
     result(res)
     updateSelectInput(session, "dl_dataset", selected = "processed")
     q <- res$quality
@@ -1384,12 +1389,25 @@ server <- function(input, output, session) {
   output$quality_table <- DT::renderDT({
     req(result())
     q <- result()$quality
-    DT::datatable(q, rownames = FALSE, filter = "top",
-                  colnames = c("Subject", "Trial", "Samples", "Missing", "Subject missing", "Reason", "Excluded"),
+    labels <- c(subject = "Subject", trial = "Trial", samples = "Samples", prop_missing = "Missing",
+                prop_missing_left = "Missing (left)", prop_missing_right = "Missing (right)",
+                subject_prop_missing = "Subject missing", reason = "Reason", excluded = "Excluded",
+                pupil_icc = "L–R pupil ICC", pupil_r = "L–R pupil r")
+    agree <- intersect(c("pupil_icc", "pupil_r"), names(q))
+    tbl <- DT::datatable(q, rownames = FALSE, filter = "top",
+                  colnames = ifelse(names(q) %in% names(labels), labels[names(q)], names(q)),
                   options = list(pageLength = 8, scrollX = TRUE, dom = "tip")) |>
-      DT::formatPercentage(c("prop_missing", "subject_prop_missing"), 1) |>
+      DT::formatPercentage(intersect(c("prop_missing", "prop_missing_left", "prop_missing_right",
+                                       "subject_prop_missing"), names(q)), 1) |>
       DT::formatStyle("excluded", target = "row",
                       backgroundColor = DT::styleEqual(TRUE, "rgba(240,140,0,.12)"))
+    if (length(agree)) {
+      tbl <- tbl |>
+        DT::formatRound(agree, 3) |>
+        DT::formatStyle(agree, color = DT::styleInterval(0.9, c("#c92a2a", "inherit")),
+                        fontWeight = DT::styleInterval(0.9, c("bold", "normal")))
+    }
+    tbl
   })
 
   # ---- Results ------------------------------------------------------------
