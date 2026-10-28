@@ -451,55 +451,11 @@ run_pipeline_core <- function(data, p, log = function(...) NULL, stop_if_empty =
   d <- dplyr::anti_join(data, behav_excl, by = c("subject", "trial"))
   if (nrow(d) == 0) stop("All trials were removed by the behavioural exclusions.", call. = FALSE)
 
-  # 0b. Sampling rates: each participant's own, or upsample to the highest
-  rates <- subject_rates(d)
-  if (dplyr::n_distinct(rates$hz) == 1 && !is.null(p$hz_override) && isTRUE(is.finite(p$hz_override))) {
-    rates$hz <- p$hz_override
-  }
-  if (anyNA(rates$hz)) stop("Could not determine the sampling rate for: ",
-                            paste(rates$subject[is.na(rates$hz)], collapse = ", "), call. = FALSE)
-  rates_original <- rates
-  rate_summary <- function(r) paste(sprintf("%g Hz (%d)", sort(unique(r$hz)),
-                                            as.integer(table(r$hz))), collapse = ", ")
-  set_rate <- !is.null(p$target_rate) && isTRUE(is.finite(p$target_rate)) && p$target_rate > 0
-  target <- if (set_rate) p$target_rate else if (!is.null(p$target_hz)) p$target_hz else max(rates$hz)
-  if (set_rate) {
-    hi <- rates[rates$hz > target, ]
-    lo <- rates[rates$hz < target, ]
-    if (nrow(hi)) {
-      log("Downsampling ", paste(sprintf("%s (%g Hz)", hi$subject, hi$hz), collapse = ", "),
-          " to ", target, " Hz (averaging consecutive samples)")
-      d <- downsample_subjects(d, rates, target)
-    }
-    if (nrow(lo)) {
-      log("Upsampling ", paste(sprintf("%s (%g Hz)", lo$subject, lo$hz), collapse = ", "), " to ", target, " Hz")
-      d <- upsample_subjects(d, rates, target)
-    }
-    if (!nrow(hi) && !nrow(lo)) log("Sampling rate: ", target, " Hz (already at the target rate, so not resampled)")
-    rates$hz <- target
-  } else if (identical(p$rate_mode, "upsample") && any(rates$hz < target)) {
-    {
-      low <- rates[rates$hz < target, ]
-      log("Upsampling ", paste(sprintf("%s (%g Hz)", low$subject, low$hz), collapse = ", "),
-          " to ", target, " Hz")
-      d <- upsample_subjects(d, rates, target)
-      rates$hz <- target
-    }
-  } else if (dplyr::n_distinct(rates$hz) > 1) {
-    log("Mixed sampling rates, each participant processed at their own rate: ", rate_summary(rates))
-  } else {
-    log("Sampling rate: ", rates$hz[1], " Hz")
-  }
-  d$.hz <- rates$hz[match(as.character(d$subject), rates$subject)]
-
-  # 0c. Optional: resample onto a uniform time grid at each participant's own
-  # rate (like eyeris::resample()). Dropped samples are inserted as missing,
-  # so they are padded and interpolated like any other gap.
-  if (isTRUE(p$resample)) {
-    n_before <- nrow(d)
-    d <- resample_uniform(d)
-    log("Resampled onto a uniform grid: ", nrow(d) - n_before, " dropped sample(s) inserted as missing")
-  }
+  # 0b. Sampling rates, and 0c. the optional uniform grid
+  sr <- apply_sampling_rates(d, p, log)
+  d <- sr$data
+  rates <- sr$rates
+  rates_original <- sr$rates_original
 
   # 1. Mark blinks / invalid samples as missing
   d$pupil[!is.na(d$pupil) & d$pupil <= 0] <- NA
@@ -1223,6 +1179,63 @@ downsample_subjects <- function(d, rates, target_hz) {
   if ("sample_rate" %in% names(down)) down$sample_rate <- target_hz
   res <- dplyr::bind_rows(d[!(as.character(d$subject) %in% hi), ], tibble::as_tibble(down))
   res[order(res$subject, res$trial, res$time), names(d)[names(d) %in% names(res)]]
+}
+
+# ---- Sampling rates -----------------------------------------------------------
+
+# Bring participants to the rates chosen in step 1: each participant's own,
+# upsampled to the highest, or resampled to one rate; then optionally onto a
+# uniform grid. Used by the pipeline and by the resampled raw download.
+apply_sampling_rates <- function(d, p, log = function(...) NULL) {
+  rates <- subject_rates(d)
+  if (dplyr::n_distinct(rates$hz) == 1 && !is.null(p$hz_override) && isTRUE(is.finite(p$hz_override))) {
+    rates$hz <- p$hz_override
+  }
+  if (anyNA(rates$hz)) stop("Could not determine the sampling rate for: ",
+                            paste(rates$subject[is.na(rates$hz)], collapse = ", "), call. = FALSE)
+  rates_original <- rates
+  rate_summary <- function(r) paste(sprintf("%g Hz (%d)", sort(unique(r$hz)),
+                                            as.integer(table(r$hz))), collapse = ", ")
+  set_rate <- !is.null(p$target_rate) && isTRUE(is.finite(p$target_rate)) && p$target_rate > 0
+  target <- if (set_rate) p$target_rate else if (!is.null(p$target_hz)) p$target_hz else max(rates$hz)
+  if (set_rate) {
+    hi <- rates[rates$hz > target, ]
+    lo <- rates[rates$hz < target, ]
+    if (nrow(hi)) {
+      log("Downsampling ", paste(sprintf("%s (%g Hz)", hi$subject, hi$hz), collapse = ", "),
+          " to ", target, " Hz (averaging consecutive samples)")
+      d <- downsample_subjects(d, rates, target)
+    }
+    if (nrow(lo)) {
+      log("Upsampling ", paste(sprintf("%s (%g Hz)", lo$subject, lo$hz), collapse = ", "), " to ", target, " Hz")
+      d <- upsample_subjects(d, rates, target)
+    }
+    if (!nrow(hi) && !nrow(lo)) log("Sampling rate: ", target, " Hz (already at the target rate, so not resampled)")
+    rates$hz <- target
+  } else if (identical(p$rate_mode, "upsample") && any(rates$hz < target)) {
+    {
+      low <- rates[rates$hz < target, ]
+      log("Upsampling ", paste(sprintf("%s (%g Hz)", low$subject, low$hz), collapse = ", "),
+          " to ", target, " Hz")
+      d <- upsample_subjects(d, rates, target)
+      rates$hz <- target
+    }
+  } else if (dplyr::n_distinct(rates$hz) > 1) {
+    log("Mixed sampling rates, each participant processed at their own rate: ", rate_summary(rates))
+  } else {
+    log("Sampling rate: ", rates$hz[1], " Hz")
+  }
+  d$.hz <- rates$hz[match(as.character(d$subject), rates$subject)]
+
+  # Optional: resample onto a uniform time grid at each participant's own
+  # rate (like eyeris::resample()). Dropped samples are inserted as missing,
+  # so they are padded and interpolated like any other gap.
+  if (isTRUE(p$resample)) {
+    n_before <- nrow(d)
+    d <- resample_uniform(d)
+    log("Resampled onto a uniform grid: ", nrow(d) - n_before, " dropped sample(s) inserted as missing")
+  }
+  list(data = d, rates = rates, rates_original = rates_original)
 }
 
 # ---- Resampling onto a uniform grid ---------------------------------------

@@ -944,10 +944,17 @@ server <- function(input, output, session) {
   })
 
   # ---- Run ----------------------------------------------------------------
-  params <- reactive({
+  # The step 1 rate settings (also used alone by the resampled raw download)
+  rate_params <- reactive({
     list(
       hz_override = if (dplyr::n_distinct(detected_rates()$hz) <= 1) input$hz else NA,
       rate_mode = if (is.null(input$rate_mode)) "upsample" else input$rate_mode,
+      resample = isTRUE(input$resample),
+      target_rate = if (identical(input$rate_target, "set")) input$target_rate else NA
+    )
+  })
+  params <- reactive({
+    c(rate_params(), list(
       use_blink_col = input$use_blink_col,
       acc_col = input$acc_col, acc_correct = input$acc_correct, rt_col = input$rt_col,
       rt_min = input$rt_min, rt_max = input$rt_max, rt_sd = input$rt_sd,
@@ -968,10 +975,8 @@ server <- function(input, output, session) {
       window = c(input$win_start, input$win_end),
       bin_length = input$bin_length, group_cols = input$group_cols,
       zscore = if (is.null(input$zscore)) "none" else input$zscore,
-      shared_missing = isTRUE(input$shared_missing),
-      resample = isTRUE(input$resample),
-      target_rate = if (identical(input$rate_target, "set")) input$target_rate else NA
-    )
+      shared_missing = isTRUE(input$shared_missing)
+    ))
   })
 
   observeEvent(input$run, {
@@ -1947,8 +1952,29 @@ server <- function(input, output, session) {
                   "Combined data as loaded (no pre-processing):"),
         downloadButton("dl_raw_csv", "All participants (.csv)", class = "btn-sm btn-outline-primary"),
         downloadButton("dl_raw_zip", "One file per participant (.zip)", class = "btn-sm btn-outline-primary"),
+        if (!is.null(raw_resampling()))
+          downloadButton("dl_raw_resampled", paste0(raw_resampling(), " only (.csv)"),
+                         class = "btn-sm btn-outline-primary"),
         tags$span(class = "small text-muted", "One participant at a time: Export tab."))
   })
+  # What the step 1 rate settings would do to the loaded data, or NULL if nothing
+  raw_resampling <- reactive({
+    p <- rate_params()
+    hz <- if (dplyr::n_distinct(detected_rates()$hz) <= 1 && isTRUE(is.finite(p$hz_override)))
+      p$hz_override else detected_rates()$hz
+    target <- if (isTRUE(is.finite(p$target_rate)) && p$target_rate > 0) p$target_rate
+              else if (identical(p$rate_mode, "upsample")) max(hz)
+    if (!anyNA(hz) && length(target) && any(hz != target)) paste("Resampled to", target, "Hz")
+    else if (isTRUE(p$resample)) "Uniform grid"
+  })
+  output$dl_raw_resampled <- downloadHandler(
+    filename = function() paste0(stamp("raw_resampled"), ".csv"),
+    content = function(file) {
+      d <- apply_sampling_rates(std(), rate_params())$data
+      d$.hz <- NULL
+      write_dataset(d, file, "raw_resampled")
+    }
+  )
   output$dl_raw_csv <- downloadHandler(
     filename = function() paste0(stamp("raw_all"), ".csv"),
     content = function(file) write_dataset(std(), file, "raw")

@@ -1,5 +1,9 @@
 # shinygazer 0.3.6
 
+* Data tab: when step 1 resamples (Resample all to, upsampling mixed rates,
+  or Fill dropped samples), a "Resampled to … Hz only" button downloads the
+  combined data with just that resampling applied and no other
+  pre-processing, using the same code as a full run.
 * CSV downloads write missing values as `NA` (and `n/a` in the BIDS-like
   export) instead of empty cells, so tracker loss (which the old
   `parse_asc()` wrote as `1e+08` for gaze) is clearly marked missing.
