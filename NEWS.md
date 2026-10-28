@@ -1,5 +1,9 @@
 # shinygazer 0.3.7
 
+* The missing-data exclusion threshold now counts samples missing from the
+  recording (tracker loss, blinks, out-of-range values), not blink padding
+  or dilation-speed outliers, so the amount of padding no longer decides
+  which trials are excluded.
 * Noise-based (Hershman) blink detection no longer adds blink padding: the
   method already finds each blink's onset and offset, so Extend
   back/forward is hidden and set to 0 ms while it is selected.

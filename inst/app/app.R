@@ -215,7 +215,7 @@ sidebar_ui <- sidebar(
       conditionalPanel("input.use_mad",
                        numericInput("mad_n", "MAD multiplier (k)", 16, min = 1)),
       sliderInput("missingthresh", info("Exclusion threshold",
-                                        "Excludes any trial with MORE than this percentage of samples missing, and any participant with more than this percentage missing across all their trials (pooled). Measured after blink removal and padding, inside the analysis window when trials are time-locked."),
+                                        "Excludes any trial with MORE than this percentage of samples missing, and any participant with more than this percentage missing across all their trials (pooled). Missing means tracker loss, blinks and out-of-range samples, before blink padding and speed-outlier removal; measured inside the analysis window when trials are time-locked."),
                   min = 0, max = 100, value = 20, step = 5, post = "%")
     ),
 

@@ -85,7 +85,7 @@ The log and the parameters file record each participant's rate and which option 
 - **Blink detection.** *Tracker* uses the blinks the eye tracker flagged: EyeLink `SBLINK`/`EBLINK` events, or your blink column. *Noise-based* (Hershman, Henik & Cohen, 2018) starts from each run of missing samples and walks outward along the smoothed pupil signal. It marks the whole blink, including the eyelid closing and reopening that trackers miss, so no padding is added: *Extend back/forward* is turned off while it is selected. If *Also treat tracker blink samples as missing* is ticked, both sets of blinks are removed. Detected blinks are shaded pink in the trial viewer.
 - **Extend back/forward** (*Tracker* detection only) pads every gap, not only labelled blinks, because the pupil edge is unreliable just before and after a blink. 100 ms each way is a common default.
 - **Dilation-speed outliers** (Kret & Sjak-Shie, 2019): for each sample, the larger of the backward and forward absolute speed is computed. Samples faster than *median + k × MAD* within the trial are removed. A larger *k* removes fewer samples.
-- **Exclusion threshold** (e.g. 40%) is applied after blinks and artifacts are removed, at two levels:
+- **Exclusion threshold** (e.g. 40%) counts samples missing from the recording: tracker loss, blinks and out-of-range values. Blink padding and dilation-speed outliers are not counted, since they are cleaning choices (more padding would otherwise exclude more trials). It is applied at two levels:
   - **Participant:** if more than 40% of all the participant's samples are missing, pooled across their trials, the participant is excluded and every trial is marked *subject missing data*.
   - **Trial:** otherwise, any trial with more than 40% of its samples missing is excluded (*trial missing data*).
 
@@ -258,7 +258,7 @@ The raw columns for retained trials, plus:
 |---|---|
 | `subject`, `trial` | Trial identity |
 | `samples` | Samples in the trial (inside the analysis window when time-locked) |
-| `prop_missing` | Proportion of the trial's samples missing after blink and artifact removal (inside the analysis window when time-locked) |
+| `prop_missing` | Proportion of the trial's samples missing: tracker loss, blinks and out-of-range values, before blink padding and speed-outlier removal (inside the analysis window when time-locked) |
 | `subject_prop_missing` | Proportion of the participant's samples missing, pooled across trials (inside the analysis window when time-locked) |
 | `reason` | Why the trial was excluded, or `kept` |
 | `excluded` | `TRUE` if excluded |

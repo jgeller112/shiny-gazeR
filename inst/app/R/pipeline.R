@@ -361,7 +361,7 @@ all_excluded_error <- function(quality, p) {
   tab <- table(quality$reason)
   why <- paste(sprintf("%s (%d)", names(tab), as.integer(tab)), collapse = ", ")
   hint <- if (any(grepl("^no ", names(tab)))) "Check the time-lock event(s), or turn time-locking off if the recording has no events."
-          else if (any(grepl("missing", names(tab)))) sprintf("Trials or participants with more than %.0f%% missing are excluded; raise the threshold, reduce blink padding, or pick the better eye.", 100 * p$missingthresh)
+          else if (any(grepl("missing", names(tab)))) sprintf("Trials or participants with more than %.0f%% missing are excluded; raise the threshold or pick the better eye.", 100 * p$missingthresh)
           else "See the reasons above."
   stop("All trials were excluded: ", why, ". ", hint, call. = FALSE)
 }
@@ -489,6 +489,11 @@ run_pipeline_core <- function(data, p, log = function(...) NULL, stop_if_empty =
   log("Blinks detected: ", sum(grepl(" 1$", r$values)), " (",
       sprintf("%.1f%%", 100 * mean(d$blink_detected)), " of samples)")
 
+  # Missing data for the exclusion threshold: tracker loss, blinks and
+  # out-of-range samples, before padding and speed-outlier removal (which
+  # are cleaning choices, not data the tracker lost)
+  missing_raw <- is.na(d$pupil)
+
   # 2. Extend blinks
   log("Extending blinks: ", p$fillback, " ms back, ", p$fillforward, " ms forward")
   d <- d %>%
@@ -528,10 +533,10 @@ run_pipeline_core <- function(data, p, log = function(...) NULL, stop_if_empty =
   }
   has_event <- if (use_window) !is.na(tz) else rep(TRUE, nrow(d))
   quality <- d %>%
-    dplyr::mutate(.in = in_window, .ev = has_event) %>%
+    dplyr::mutate(.in = in_window, .ev = has_event, .miss = missing_raw) %>%
     dplyr::group_by(subject, trial) %>%
     dplyr::summarise(samples = sum(.in),
-                     missing_n = sum(is.na(extendpupil[.in])),
+                     missing_n = sum(.miss[.in]),
                      prop_missing = missing_n / samples,
                      valid_total = sum(!is.na(extendpupil)),
                      has_event = any(.ev),
@@ -918,7 +923,7 @@ column_descriptions <- c(
   samples = "Number of samples in the trial (inside the analysis window when time-locked).",
   pupil_icc = "Binocular 'Both' only: left-right pupil agreement in the trial as loaded, intraclass correlation ICC(A,1) over samples with both eyes valid (gazer::pupil_cor). Lower when one eye reads larger.",
   pupil_r = "Binocular 'Both' only: left-right pupil correlation in the trial as loaded, over samples with both eyes valid (gazer::pupil_cor). Do the eyes rise and fall together?",
-  prop_missing = "Proportion of samples missing after blink and artifact removal (inside the analysis window when time-locked).",
+  prop_missing = "Proportion of samples missing (tracker loss, blinks and out-of-range values, before blink padding and speed-outlier removal), inside the analysis window when time-locked.",
   subject_prop_missing = "Proportion of the participant's samples missing, pooled across all their analysable trials (inside the analysis window when time-locked).",
   reason = "Why the trial was excluded, or 'kept'.",
   excluded = "TRUE if the trial was excluded from processing.",
@@ -1102,7 +1107,7 @@ methods_paragraph <- function(res, meta) {
   missing_tr <- q[q$reason %in% c("trial missing data", "no valid samples"), ]
   subj_out <- unique(q$subject[q$reason == "subject missing data"])
   noevent <- q[grepl("^no '", q$reason), ]
-  s <- c(s, sprintf("Participants with more than %s of samples missing across all their trials, and trials with more than %s missing, were excluded%s.",
+  s <- c(s, sprintf("Participants with more than %s of samples missing across all their trials, and trials with more than %s missing, were excluded (missing samples being tracker loss, blinks and out-of-range values, before blink padding%s).",
                     thr, thr, if (win) ", counting only samples within the analysis window" else ""))
 
   # Interpolation and smoothing
