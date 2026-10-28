@@ -54,8 +54,9 @@ The Data tab (and the Quality tab) shows, for each participant, how much of the 
 - **Blink:** samples inside a tracker-flagged blink.
 - **Missing outside blinks:** tracker loss (e.g. the eye wasn't found).
 - **Trials >50% missing:** trials that are mostly missing.
+- **L–R pupil r** (with **Both**): the correlation between the left and right pupil over samples where both are valid (`gazeR::pupil_cor()`). The two pupils move together, so this is usually above .9. A lower value (shown in red) means one eye was tracked poorly; averaging the eyes would mix in that noise, so reload with the better eye.
 
-With **Both**, there are separate rows for the left eye, the right eye and their average. The average is missing whenever either eye is, and its blink is 1 if either eye blinks. With **Left**, **Right** or **Average**, there is one row for that choice. If one eye is much worse than the other (e.g. lost for whole trials), reload with the better eye.
+With **Both**, there are separate rows for the left eye, the right eye and their average. The average is the monocular mean, so it is missing only when both eyes are, and its blink is 1 if either eye blinks. With **Left**, **Right** or **Average**, there is one row for that choice. If one eye is much worse than the other (e.g. lost for whole trials), reload with the better eye.
 
 ## Settings
 

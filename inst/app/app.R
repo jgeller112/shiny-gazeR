@@ -847,13 +847,22 @@ server <- function(input, output, session) {
 
   eye_datatable <- function() {
     e <- eye_stats()
-    DT::datatable(e, rownames = FALSE, filter = "top",
+    has_r <- "pupil_r" %in% names(e)
+    tbl <- DT::datatable(e, rownames = FALSE, filter = "top",
                   colnames = c("Subject", "Eye", "Samples", "Missing", "Blink",
-                               "Missing outside blinks", "Trials", "Trials >50% missing"),
+                               "Missing outside blinks", "Trials", "Trials >50% missing",
+                               if (has_r) "L–R pupil r"),
                   options = list(pageLength = 10, dom = "tip", scrollX = TRUE)) |>
       DT::formatPercentage(c("missing", "blink", "tracker_loss"), 1) |>
       DT::formatStyle("missing", target = "row",
                       backgroundColor = DT::styleInterval(0.3, c("transparent", "rgba(240,140,0,.28)")))
+    if (has_r) {
+      tbl <- tbl |>
+        DT::formatRound("pupil_r", 3) |>
+        DT::formatStyle("pupil_r", color = DT::styleInterval(0.9, c("#c92a2a", "inherit")),
+                        fontWeight = DT::styleInterval(0.9, c("bold", "normal")))
+    }
+    tbl
   }
   output$eye_table <- DT::renderDT(eye_datatable())
   output$eye_table_quality <- DT::renderDT(eye_datatable())

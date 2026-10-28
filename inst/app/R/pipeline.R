@@ -929,7 +929,14 @@ eye_summary <- function(d, single_label = "pupil") {
                        trials_mostly_missing = sum(miss_n / n > 0.5),
                        .groups = "drop")
   })
-  dplyr::bind_rows(rows) %>% dplyr::arrange(subject, eye)
+  out <- dplyr::bind_rows(rows) %>% dplyr::arrange(subject, eye)
+  # Left-right pupil correlation per participant (gazer::pupil_cor), a check
+  # that averaging the eyes is safe
+  if (all(c("pupil_left", "pupil_right") %in% names(d))) {
+    r <- gazer::pupil_cor(as.data.frame(d[c("subject", "pupil_left", "pupil_right")]), summary = TRUE)
+    out$pupil_r <- r$pupil_r[match(as.character(out$subject), as.character(r$subject))]
+  }
+  out
 }
 
 # ---- Methods paragraph --------------------------------------------------
