@@ -13,7 +13,8 @@ Steps run in this order (functions are from gazeR unless noted):
 | Exclusion | Trials and subjects with too much missing data are dropped | (same logic as `count_missing_pupil()`) |
 | Interpolate & smooth | Gaps are filled, then the trace is smoothed, or the reverse | `smooth_interpolate_pupil()` |
 | Low-pass | Zero-phase Butterworth filter per trial, if chosen as the smoothing filter | `lowpass_filter()` |
-| Baseline | Median pupil size in the baseline period is subtracted or divided out | `baseline_correction_pupil_msg()`, `baseline_correction_pupil()` |
+| Baseline | Median (or mean) pupil size in the baseline period is subtracted or divided out | `baseline_correction_pupil_msg()`, `baseline_correction_pupil()` |
+| Re-scale | The baseline-corrected pupil is z-scored per participant (optional) | `zscore_pupil()` |
 | Time-lock | Time 0 is set to an event's onset, and the trial is trimmed to a window | `onset_pupil()` |
 | Bin | Samples are averaged into time bins within your grouping columns | `downsample_gaze(type = "pupil")` |
 
@@ -81,7 +82,7 @@ The log and the parameters file record each participant's rate and which option 
 
 ### 2 · Blinks & artifacts
 - **Plausible range** (min/max pupil) sets out-of-range samples to missing before anything else runs, e.g. 2–9 mm for diameters in mm.
-- **Blink detection.** *Tracker* uses the blinks the eye tracker flagged: EyeLink `SBLINK`/`EBLINK` events, or your blink column. *Noise-based* (Hershman, Henik & Cohen, 2018) starts from each run of missing samples and walks outward along the smoothed pupil signal. It marks the whole blink, including the eyelid closing and reopening that trackers miss, so it needs little or no extra padding (try 0–50 ms). If *Also treat tracker blink samples as missing* is ticked, both sets of blinks are removed. Detected blinks are shaded red in the trial viewer.
+- **Blink detection.** *Tracker* uses the blinks the eye tracker flagged: EyeLink `SBLINK`/`EBLINK` events, or your blink column. *Noise-based* (Hershman, Henik & Cohen, 2018) starts from each run of missing samples and walks outward along the smoothed pupil signal. It marks the whole blink, including the eyelid closing and reopening that trackers miss, so it needs little or no extra padding (try 0–50 ms). If *Also treat tracker blink samples as missing* is ticked, both sets of blinks are removed. Detected blinks are shaded pink in the trial viewer.
 - **Extend back/forward** pads every gap, not only labelled blinks, because the pupil edge is unreliable just before and after a blink. 100 ms each way is a common default.
 - **Dilation-speed outliers** (Kret & Sjak-Shie, 2019): for each sample, the larger of the backward and forward absolute speed is computed. Samples faster than *median + k × MAD* within the trial are removed. A larger *k* removes fewer samples.
 - **Exclusion threshold** (e.g. 40%) is applied after blinks and artifacts are removed, at two levels:
@@ -128,6 +129,16 @@ Also in step 6, and working with behavioural columns from either the eye-trackin
 - **RT.** Choose the RT column (ms). *Min* and *Max* are absolute cutoffs (e.g. 200 ms for anticipations). *± SD* removes RTs more than *k* SDs from each subject's mean, computed on trials that pass the accuracy and min/max checks. Missing RTs are excluded once an RT column is chosen.
 
 These rules run before any pupil processing. The panel previews how many trials they will remove, and the Quality tab lists each excluded trial with its reason.
+
+## Trial viewer
+
+The top panel shows one trial at each stage:
+
+- **Raw signal** (grey line): the pupil as loaded.
+- **After blink/artifact removal** (blue line): what is left once blinks, padding, speed outliers and out-of-range samples are cut out; the gaps are where samples were removed.
+- **Interpolated + smoothed signal** (orange line): the gaps filled and the trace smoothed.
+
+The shaded bands show what was removed: **pink** = blink (with its padding), **grey** = other removed or missing samples (tracker loss, speed outliers, out-of-range). The key above the plot gives the percentage of each. The bottom panel is the baseline-corrected (or z-scored) pupil. Dotted lines mark event messages.
 
 ## Results
 The plots are computed from the processed samples, separately from Group by, so you can change them without re-running:

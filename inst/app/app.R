@@ -1124,8 +1124,9 @@ server <- function(input, output, session) {
     swatch <- function(col) tags$span(class = "missing-swatch", style = paste0("background:", col))
     pct <- function(x) if (is.na(x)) "–" else sprintf("%.1f%%", 100 * x)
     div(class = "missing-key small text-muted",
-        swatch(blink_col), "Blink ", tags$b(pct(m$blink)),
-        swatch(miss_col), if (is.na(m$removed)) "Missing in recording " else "Other removed / missing ",
+        "Shaded: ",
+        swatch(blink_col), "blink ", tags$b(pct(m$blink)),
+        swatch(miss_col), if (is.na(m$removed)) "missing in recording " else "other removed / missing ",
         tags$b(if (is.na(m$removed)) pct(m$raw) else pct(max(m$removed - m$blink, 0))),
         if (!is.na(m$removed)) tagList(tags$span(class = "ms-3"), "Total missing after cleaning ", tags$b(pct(m$removed))))
   })
@@ -1201,7 +1202,7 @@ server <- function(input, output, session) {
     }
 
     top <- plotly::plot_ly(rawt, x = ~time, y = ~pupil, type = "scatter", mode = "lines",
-                           name = "Raw", line = list(color = "rgba(134,142,150,.45)", width = 1))
+                           name = "Raw signal", line = list(color = "rgba(134,142,150,.45)", width = 1))
     fig <- plotly::layout(top, yaxis = list(title = "Pupil size"))
 
     res <- result()
@@ -1210,14 +1211,14 @@ server <- function(input, output, session) {
     proc <- if (!is.null(res)) res$data[is_this(res$data), ]
     if (!is.null(clean) && nrow(clean)) {
       top <- plotly::add_trace(top, data = clean, x = ~time, y = ~extendpupil, mode = "lines",
-                               name = "Blinks/artifacts removed",
+                               name = "After blink/artifact removal",
                                line = list(color = palette[1], width = 1.5))
       fig <- plotly::layout(top, yaxis = list(title = "Pupil size"))
     }
     if (!is.null(proc) && nrow(proc)) {
       top <- top |>
         plotly::add_trace(data = proc, x = ~time, y = ~pup_interp, mode = "lines",
-                          name = "Interpolated + smoothed",
+                          name = "Interpolated + smoothed signal",
                           line = list(color = palette[2], width = 2.5))
       zs <- identical(result()$value_col, "pup_z") && "pup_z" %in% names(proc)
       bottom <- plotly::plot_ly(proc, x = ~time, y = proc[[if (zs) "pup_z" else "baselinecorrectedp"]], type = "scatter",
