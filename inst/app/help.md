@@ -138,7 +138,7 @@ The top panel shows one trial at each stage:
 - **After blink/artifact removal** (blue line): what is left once blinks, padding, speed outliers and out-of-range samples are cut out; the gaps are where samples were removed.
 - **Interpolated + smoothed signal** (orange line): the gaps filled and the trace smoothed.
 
-The shaded bands show what was removed: **pink** = blink (with its padding), **grey** = other removed or missing samples (tracker loss, speed outliers, out-of-range). The key above the plot gives the percentage of each. The bottom panel is the baseline-corrected (or z-scored) pupil. Dotted lines mark event messages.
+The shaded bands show what was removed: **pink** = blink (with its padding), **grey** = other removed or missing samples (tracker loss, speed outliers, out-of-range). The key above the plot gives the percentage of each. The bottom panel is the baseline-corrected (or z-scored) pupil. Dotted lines mark event messages. With time-locking, only the analysis window is processed: it is marked by dashed lines, the rest of the trial is greyed out, and the blue and orange lines and the bands are drawn only inside it. Excluded trials are not interpolated, so they show only the raw signal and the cleaning step, with a note saying why they were excluded.
 
 ## Results
 The plots are computed from the processed samples, separately from Group by, so you can change them without re-running:

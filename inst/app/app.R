@@ -1030,8 +1030,12 @@ server <- function(input, output, session) {
     if (!nrow(q)) return(NULL)
     pct <- if (is.na(q$prop_missing)) q$reason else sprintf("%.1f%% missing", 100 * q$prop_missing)
     if (isTRUE(q$excluded)) {
+      why <- if (grepl("subject missing data", q$reason))
+        sprintf("participant has %.1f%% missing across trials", 100 * q$subject_prop_missing)
+      else if (grepl("trial missing data", q$reason)) paste0(sub("trial missing data", "", q$reason), pct)
+      else q$reason
       tags$span(class = "badge rounded-pill text-bg-warning fs-6", icon("triangle-exclamation"),
-                "Excluded:", if (q$reason %in% c("trial missing data", "subject missing data")) pct else q$reason)
+                "Excluded:", why)
     } else {
       tags$span(class = "badge rounded-pill text-bg-success fs-6", icon("check"), "Kept:", pct)
     }
@@ -1046,6 +1050,11 @@ server <- function(input, output, session) {
       if (is.null(result()) && !isTRUE(input$raw_only))
         div(class = "alert alert-light border small",
             icon("circle-info"), " This is the raw trace. Run the pipeline to overlay the processed signal."),
+      if (!is.null(result()) && !isTRUE(input$raw_only) && isTRUE(trial_status()$excluded[1]))
+        div(class = "alert alert-warning small py-2",
+            icon("circle-info"),
+            " This trial was excluded, so it was not interpolated, smoothed or baseline-corrected: only the raw signal and the cleaning step (blue) are shown. ",
+            "To include it, raise the exclusion threshold (step 2) and run again; the Quality tab lists every excluded trial."),
       uiOutput("missing_key"),
       plotly::plotlyOutput("trial_plot", height = "560px")
     )
@@ -1209,6 +1218,10 @@ server <- function(input, output, session) {
     # Blink/artifact removal is kept for every trial, including excluded ones
     clean <- if (!is.null(res)) res$cleaned[is_this(res$cleaned), ]
     proc <- if (!is.null(res)) res$data[is_this(res$data), ]
+    # Time-locked trials are processed only inside the analysis window: show
+    # the cleaning step there too, so nothing outside looks processed
+    win <- if (!is.null(proc) && nrow(proc) && isTRUE(res$params$timelock)) range(proc$time, na.rm = TRUE)
+    if (!is.null(win) && !is.null(clean)) clean <- clean[clean$time >= win[1] & clean$time <= win[2], ]
     if (!is.null(clean) && nrow(clean)) {
       top <- plotly::add_trace(top, data = clean, x = ~time, y = ~extendpupil, mode = "lines",
                                name = "After blink/artifact removal",
@@ -1248,6 +1261,23 @@ server <- function(input, output, session) {
       shapes <- c(shapes,
                   missing_shapes(is.na(rawt$pupil) & !blink_mask, rawt$time, miss_col),
                   missing_shapes(blink_mask, rawt$time, blink_col))
+    }
+
+    # Analysis window: dashed edges, and the rest of the trial greyed out
+    if (!is.null(win)) {
+      full <- range(rawt$time, na.rm = TRUE)
+      edge <- function(x) list(type = "line", xref = "x", yref = "paper", x0 = x, x1 = x, y0 = 0, y1 = 1,
+                               line = list(color = "rgba(73,80,87,.7)", dash = "dash", width = 1.2))
+      outside <- function(a, b) list(type = "rect", xref = "x", yref = "paper", layer = "above",
+                                     x0 = a, x1 = b, y0 = 0, y1 = 1, fillcolor = "rgba(248,249,250,.6)",
+                                     line = list(width = 0))
+      if (full[1] < win[1]) shapes <- c(shapes, list(outside(full[1], win[1]), edge(win[1])))
+      if (full[2] > win[2]) {
+        shapes <- c(shapes, list(outside(win[2], full[2]), edge(win[2])))
+        annots[[length(annots) + 1]] <- list(
+          x = (win[2] + full[2]) / 2, y = 0.5, xref = "x", yref = "paper", showarrow = FALSE,
+          text = "outside analysis window<br>(not processed)", font = list(size = 11, color = "#868e96"))
+      }
     }
 
     # Event markers as dotted vertical lines with labels
