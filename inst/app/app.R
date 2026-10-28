@@ -1952,10 +1952,17 @@ server <- function(input, output, session) {
                   "Combined data as loaded (no pre-processing):"),
         downloadButton("dl_raw_csv", "All participants (.csv)", class = "btn-sm btn-outline-primary"),
         downloadButton("dl_raw_zip", "One file per participant (.zip)", class = "btn-sm btn-outline-primary"),
-        if (!is.null(raw_resampling()))
-          downloadButton("dl_raw_resampled", paste0(raw_resampling(), " only (.csv)"),
-                         class = "btn-sm btn-outline-primary"),
-        tags$span(class = "small text-muted", "One participant at a time: Export tab."))
+        tags$span(class = "small text-muted", "One participant at a time: Export tab."),
+        div(class = "w-100"),
+        tags$span(class = "small text-muted me-1", icon("download"),
+                  "Resampled only (step 1 rate settings, no other pre-processing):"),
+        if (is.null(raw_resampling())) tagList(
+          tags$button(class = "btn btn-sm btn-outline-primary", disabled = NA,
+                      icon("download"), "Resampled (.csv)"),
+          tags$span(class = "small text-muted",
+                    "Nothing to resample yet: choose Resample all to (a rate other than the recorded one) or Fill dropped samples in step 1."))
+        else downloadButton("dl_raw_resampled", paste0(raw_resampling(), " (.csv)"),
+                            class = "btn-sm btn-outline-primary"))
   })
   # What the step 1 rate settings would do to the loaded data, or NULL if nothing
   raw_resampling <- reactive({
