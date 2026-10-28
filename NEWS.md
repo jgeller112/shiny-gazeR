@@ -1,5 +1,8 @@
 # shinygazer 0.3.7
 
+* Noise-based (Hershman) blink detection no longer adds blink padding: the
+  method already finds each blink's onset and offset, so Extend
+  back/forward is hidden and set to 0 ms while it is selected.
 * Data tab, binocular (Both): the eye table shows the left-right pupil ICC
   (agreement) and repeated-measures correlation (rmcorr) per participant,
   over whole trials with trial means removed (gazer >= 0.2.14). The

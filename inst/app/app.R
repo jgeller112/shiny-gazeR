@@ -201,13 +201,15 @@ sidebar_ui <- sidebar(
                          col_widths = c(6, 6), gap = "0.5rem",
                          numericInput("hershman_smooth", info("Smoothing (ms)", "Moving-average window used to find blink onset and offset."), 10, min = 1),
                          numericInput("hershman_gap", info("Merge gap (ms)", "Blinks closer together than this are merged."), 100, min = 0, step = 10)
-                       )),
+                       ),
+                       p(class = "small text-muted", "No padding: the noise-based method already finds each blink's onset and offset.")),
       checkboxInput("use_blink_col", "Also treat tracker blink samples as missing", TRUE),
-      layout_columns(
-        col_widths = c(6, 6), gap = "0.5rem",
-        numericInput("fillback", info("Extend back (ms)", "Pad every gap in the signal backwards by this much. gazeR::extend_blinks()"), 100, min = 0, step = 10),
-        numericInput("fillforward", info("Extend forward (ms)", "Pad every gap forwards by this much."), 100, min = 0, step = 10)
-      ),
+      conditionalPanel("input.blink_method != 'hershman'",
+                       layout_columns(
+                         col_widths = c(6, 6), gap = "0.5rem",
+                         numericInput("fillback", info("Extend back (ms)", "Pad every gap in the signal backwards by this much. gazeR::extend_blinks(). Not used with noise-based detection, which already finds each blink's onset and offset."), 100, min = 0, step = 10),
+                         numericInput("fillforward", info("Extend forward (ms)", "Pad every gap forwards by this much."), 100, min = 0, step = 10)
+                       )),
       checkboxInput("use_mad", info("Remove dilation-speed outliers",
                                     "Drops samples whose change in pupil size is implausibly fast (median + k × MAD). gazeR::speed_pupil(), calc_mad()"), TRUE),
       conditionalPanel("input.use_mad",
@@ -961,7 +963,9 @@ server <- function(input, output, session) {
       pupil_min = input$pupil_min, pupil_max = input$pupil_max,
       blink_method = input$blink_method, hershman_smooth = input$hershman_smooth,
       hershman_gap = input$hershman_gap,
-      fillback = input$fillback, fillforward = input$fillforward,
+      # Noise-based detection already finds blink onset and offset: no padding
+      fillback = if (identical(input$blink_method, "hershman")) 0 else input$fillback,
+      fillforward = if (identical(input$blink_method, "hershman")) 0 else input$fillforward,
       use_mad = input$use_mad, mad_n = input$mad_n,
       missingthresh = input$missingthresh / 100,  # slider is in %, pipeline uses a proportion
       interp_type = input$interp_type, filter = input$filter, step_first = input$step_first,
