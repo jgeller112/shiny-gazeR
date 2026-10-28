@@ -1,4 +1,4 @@
-# shinygazer 0.3.6
+# shinygazer 0.3.7
 
 * Data tab: when step 1 resamples (Resample all to, upsampling mixed rates,
   or Fill dropped samples), a "Resampled to … Hz only" button downloads the
@@ -10,6 +10,9 @@
 * Reads the gzipped example data shipped with gazer >= 0.2.13 (falls back to
   the older .xls), and gzipped (.gz) delimited uploads, decompressing with
   base R.
+
+# shinygazer 0.3.6
+
 * Results: multilevel cluster-based permutation test (Maris & Oostenveld,
   2007). A mixed model per time bin (subject means or trials, optional item
   intercept), labels shuffled within subjects, cluster p-values; figure with
