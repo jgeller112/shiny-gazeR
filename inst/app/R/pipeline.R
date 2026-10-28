@@ -33,9 +33,10 @@ stage_uploads <- function(paths, names, dir = tempfile("gazer_upload_")) {
 }
 
 # Pick or average the two eyes. `left`/`right` are named lists of vectors
-# (pupil, x, y); average is taken only where both eyes are valid.
+# (pupil, x, y); the average is the monocular mean (both eyes' mean, or the
+# one valid eye), as EyeLink reports the average eye.
 combine_eyes <- function(d, left, right, eye = "average") {
-  avg <- function(a, b) ifelse(!is.na(left$pupil) & !is.na(right$pupil), (a + b) / 2, NA_real_)
+  avg <- gazer::compute_monocular_mean
   d$pupil_left <- left$pupil
   d$pupil_right <- right$pupil
   d$x_left <- left$x
@@ -826,9 +827,9 @@ column_descriptions <- c(
   subject = "Participant label (file name without extension for EyeLink files, or your subject column).",
   trial = "Trial number. For EyeLink files, one per TRIALID message.",
   time = "Time in ms from the start of recording in the trial (EyeLink: the !MODE RECORD message).",
-  pupil = "Pupil size in tracker units (EyeLink: area or diameter). NA when missing. Binocular 'Average'/'Both': the mean of both eyes, only where both are valid.",
-  x = "Horizontal gaze position (screen pixels; Tobii: 0-1 display area). Binocular 'Average'/'Both': mean of both eyes.",
-  y = "Vertical gaze position (screen pixels; Tobii: 0-1 display area). Binocular 'Average'/'Both': mean of both eyes.",
+  pupil = "Pupil size in tracker units (EyeLink: area or diameter). NA when missing. Binocular 'Average'/'Both': monocular mean, i.e. the mean of both eyes, or the one valid eye.",
+  x = "Horizontal gaze position (screen pixels; Tobii: 0-1 display area). Binocular 'Average'/'Both': monocular mean of the eyes.",
+  y = "Vertical gaze position (screen pixels; Tobii: 0-1 display area). Binocular 'Average'/'Both': monocular mean of the eyes.",
   blink = "1 during a blink flagged by the tracker, 0 otherwise. Binocular 'Average'/'Both': 1 if either eye is in a blink.",
   message = "Event message(s) on this sample (first sample at or after the message; Experiment Builder offsets applied). NA otherwise.",
   tracker_time = "The eye tracker's own clock (ms). NA on samples added by upsampling.",
@@ -982,7 +983,7 @@ methods_paragraph <- function(res, meta) {
   } else if (identical(eye, "right") || identical(pcol, "pupil_right")) {
     s <- c(s, "Pupil size from the right eye was analysed.")
   } else if (eye %in% c("average", "both")) {
-    s <- c(s, "Pupil size was averaged across both eyes for samples where both eyes were valid; a sample was treated as part of a blink if either eye was blinking.")
+    s <- c(s, "Pupil size was averaged across both eyes (monocular mean: the mean of both eyes, or the value of the one valid eye); a sample was treated as part of a blink if either eye was blinking.")
   }
 
   # Cleaning

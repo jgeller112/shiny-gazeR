@@ -1,5 +1,9 @@
 # shinygazer 0.3.6
 
+* Binocular "Average": pupil, x and y are the monocular mean (both eyes'
+  mean, or the one valid eye), as EyeLink reports the average eye, for all
+  trackers (gazer >= 0.2.12). Help, data dictionary and methods paragraph
+  updated.
 * Tobii Pro Lab input: choose **Tobii Pro Lab (.tsv)** and upload data
   exports, read with gazer::read_tobii_prolab() (needs gazer >= 0.2.12).
   Trials follow the presented stimulus (calibration dropped) or start at

@@ -41,7 +41,7 @@ For Tobii, invalid samples (validity flag false) are set to missing, and gaze is
 
 In more detail:
 
-- **EyeLink `.asc` files** (convert `.edf` with SR Research's `edf2asc`). These are read with `read_asc()`. Trials run from `TRIALID` to `TRIAL_RESULT`, and time 0 is the start of recording in each trial. Blinks come from the tracker's blink events. Event messages go in the `message` column, and Experiment Builder `TRIAL_VAR`s (your conditions) become columns. For binocular recordings, choose the left eye, the right eye, their average, or **Both**. With **Average** and **Both**, `pupil` (and `x`, `y`) is the **average of both eyes**, computed only where both are valid, and `blink` is 1 if **either** eye is blinking. **Both** also keeps `pupil_left`, `pupil_right`, x/y and `blink_left`, `blink_right` for each eye, so you can map one eye in the column settings. If you do, map its matching blink column too (e.g. `pupil_left` with `blink_left`).
+- **EyeLink `.asc` files** (convert `.edf` with SR Research's `edf2asc`). These are read with `read_asc()`. Trials run from `TRIALID` to `TRIAL_RESULT`, and time 0 is the start of recording in each trial. Blinks come from the tracker's blink events. Event messages go in the `message` column, and Experiment Builder `TRIAL_VAR`s (your conditions) become columns. For binocular recordings, choose the left eye, the right eye, their average, or **Both**. With **Average** and **Both**, `pupil` (and `x`, `y`) is the **monocular mean**, as EyeLink reports the average eye: the mean of both eyes, or the value of the one valid eye (missing only when neither is), and `blink` is 1 if **either** eye is blinking. **Both** also keeps `pupil_left`, `pupil_right`, x/y and `blink_left`, `blink_right` for each eye, so you can map one eye in the column settings. If you do, map its matching blink column too (e.g. `pupil_left` with `blink_left`).
 - **gazeR-format files** (csv, tsv, or space-delimited text) like the example data. These include files written by `parse_asc()`.
 - **SR Research Data Viewer sample reports** (`.xls` tab-delimited text). The app adds a `sr_trial_time` column (`TIMESTAMP − IP_START_TIME`) for the time mapping. Missing values coded as `.` are read as `NA`.
 
@@ -187,7 +187,7 @@ One row per sample, as loaded. No cleaning has been applied.
 | `subject` | Participant label (file name without extension for EyeLink files) |
 | `trial` | Trial number (one per `TRIALID` for EyeLink files) |
 | `time` | ms from the start of recording in the trial |
-| `pupil` | Pupil size in tracker units (EyeLink: area or diameter); `NA` = missing. **Average/Both: mean of both eyes, only where both are valid** |
+| `pupil` | Pupil size in tracker units (EyeLink: area or diameter); `NA` = missing. **Average/Both: monocular mean (mean of both eyes, or the one valid eye)** |
 | `x`, `y` | Gaze position (pixels; Tobii: 0–1). Average/Both: mean of both eyes |
 | `blink` | 1 during a tracker-flagged blink. **Average/Both: 1 if either eye is blinking** |
 | `message` | Event message(s) on this sample, offsets applied; `NA` otherwise |

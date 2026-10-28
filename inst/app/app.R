@@ -155,7 +155,7 @@ sidebar_ui <- sidebar(
                        textInput("bids_trial_start", info("Trial start messages", "Comma-separated. A new trial starts at each event message beginning with one of these (e.g. TRIALID for EyeLink data), and time is ms from it. Leave blank to treat each run as one trial (e.g. resting state)."),
                                  placeholder = "e.g. TRIALID")),
       conditionalPanel("['auto', 'eyelink', 'tobii', 'prolab', 'bids'].indexOf(input.tracker) >= 0",
-                       radioButtons("asc_eye", info("Eye (binocular)", "Average: pupil, x and y are the mean of both eyes, only where both are valid; blink is 1 if either eye is blinking. Both: also keeps pupil_left / pupil_right, x/y and blink_left / blink_right for each eye, so you can map one eye below (use its matching blink column). Changing this re-reads the files."),
+                       radioButtons("asc_eye", info("Eye (binocular)", "Average: pupil, x and y are the monocular mean, as EyeLink reports the average eye: the mean of both eyes, or the one valid eye; blink is 1 if either eye is blinking. Both: also keeps pupil_left / pupil_right, x/y and blink_left / blink_right for each eye, so you can map one eye below (use its matching blink column). Changing this re-reads the files."),
                                     c(Average = "average", Left = "left", Right = "right", Both = "both"), inline = TRUE)),
       actionLink("load_example", tagList(icon("flask"), "Try the example data")),
       tags$div(class = "section-label", "Column mapping"),
