@@ -47,6 +47,16 @@ In more detail:
 
 If you load several files at once, they are stacked. A `source_file` column records where each row came from.
 
+### Left and right eyes separately (Eye: Both)
+With **Eye: Both**, the left and right pupil are processed **separately**, for comparing the eyes (e.g. left vs right dilation):
+
+- Both eyes use identical settings and the **same blink mask**: `blink` is 1 if either eye blinks, so both eyes lose the same samples to blinks and padding. The Pupil and Blink column mappings are not used.
+- **Same missing samples in both eyes** (on by default): a sample missing in one eye (tracker loss) is set missing in the other too, so both are padded and interpolated over exactly the same gaps. Untick it to keep each eye's own data.
+- Only trials that pass the exclusion rules for **both** eyes are kept. If a trial fails for one eye, both eyes are re-run on the trials that pass for both, so baselines and z-scores use the same trials. The Quality tab gives the reason (e.g. `right eye: trial missing data`).
+- Results have an `eye` column. The processed and binned data have one set of rows per eye, the Results plots split by eye, the trial viewer has an **Eye** selector, and QC reports have a section per eye.
+
+Speed outliers and the plausible range are still applied to each eye's own signal.
+
 ### Missing data and blinks by eye
 The Data tab (and the Quality tab) shows, for each participant, how much of the recording is missing, as loaded and before any cleaning:
 
@@ -64,7 +74,7 @@ With **Both**, there are separate rows for the left eye, the right eye and their
 Check that each column is mapped correctly.
 
 **Sampling rate.** Each participant's rate is read from the file header for EyeLink `.asc` files, or estimated from the median time step for other files. It's used for blink padding, noise-based blink detection, the cubic max-gap setting and the low-pass filter. The **Recorded rate** box only corrects a wrongly detected rate: changing 500 to 1000 tells the app the data *are* 1000 Hz and does not add samples. To change the rate of the data, use **Resample all to** (the target starts at the highest recorded rate). Resampling happens when you click **Run**, so it shows in the processed and binned data and downloads, not in the data as loaded (the Data tab and *Raw combined* downloads). If participants were recorded at different rates (e.g. some at 500 Hz instead of 1000 Hz), step 1 lists them and offers two options:
-- **Upsample to the highest rate** (recommended). Lower-rate participants get new samples in between the real ones, using `upsample_gaze()`. Each new sample's pupil and gaze values are interpolated from the real samples either side. If either neighbour is missing (a blink, tracker loss), the new sample stays missing. Event messages and the original samples are unchanged. Afterwards everyone is processed at the same rate. Upsampling assumes whole-millisecond time stamps, as EyeLink records.
+- **Upsample to the highest rate** (recommended). Lower-rate participants get new samples in between the real ones, using `resample_gaze()`. Each new sample's pupil and gaze values are interpolated from the real samples either side. If either neighbour is missing (a blink, tracker loss), the new sample stays missing. Event messages and the original samples are unchanged. Afterwards everyone is processed at the same rate. Any rate works, including rates whose sample step isn't a whole number of ms (e.g. 600 Hz): new samples are placed evenly between each pair of recorded samples.
 - **Use each participant's own rate.** Every step uses that participant's rate. Time bins are in ms, so results still line up across participants.
 
 The log and the parameters file record each participant's rate and which option was used.

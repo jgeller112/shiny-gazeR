@@ -156,7 +156,12 @@ sidebar_ui <- sidebar(
                                  placeholder = "e.g. TRIALID")),
       conditionalPanel("['auto', 'eyelink', 'tobii', 'prolab', 'bids'].indexOf(input.tracker) >= 0",
                        radioButtons("asc_eye", info("Eye (binocular)", "Average: pupil, x and y are the monocular mean, as EyeLink reports the average eye: the mean of both eyes, or the one valid eye; blink is 1 if either eye is blinking. Both: also keeps pupil_left / pupil_right, x/y and blink_left / blink_right for each eye, so you can map one eye below (use its matching blink column). Changing this re-reads the files."),
-                                    c(Average = "average", Left = "left", Right = "right", Both = "both"), inline = TRUE)),
+                                    c(Average = "average", Left = "left", Right = "right", Both = "both"), inline = TRUE),
+                       conditionalPanel("input.asc_eye == 'both'",
+                                        p(class = "small text-muted mb-1", icon("eye"),
+                                          " Both: the left and right eye are processed separately, with the same settings and the same blink mask (blink in either eye). Only trials that pass for both eyes are kept, and results have an eye column."),
+                                        checkboxInput("shared_missing", info("Same missing samples in both eyes",
+                                                                             "A sample missing in one eye (tracker loss) is set missing in the other too, so both eyes are padded and interpolated over exactly the same gaps."), TRUE))),
       actionLink("load_example", tagList(icon("flask"), "Try the example data")),
       tags$div(class = "section-label", "Column mapping"),
       layout_columns(
@@ -362,6 +367,7 @@ ui <- page_sidebar(
       div(class = "d-flex flex-wrap align-items-end gap-2 mb-2",
           selectInput("view_subject", "Subject", NULL, width = "280px"),
           selectInput("view_trial", "Trial", NULL, width = "140px"),
+          uiOutput("view_eye_ui"),
           div(class = "btn-group mb-3",
               actionButton("prev_trial", NULL, icon = icon("chevron-left"),
                            class = "btn-outline-secondary btn-sm", title = "Previous trial"),
@@ -611,12 +617,23 @@ server <- function(input, output, session) {
     add_log("Loaded behavioural data: ", nrow(b), " rows, ", ncol(b), " columns")
   })
 
+  # Eye = Both with per-eye pupil columns: each eye is processed separately,
+  # with the either-eye blink mask (pupil and blink mappings are not used)
+  eyes_mode <- reactive({
+    identical(input$asc_eye, "both") && !is.null(raw()) &&
+      input$tracker %in% c("auto", "eyelink", "tobii", "prolab", "bids") &&
+      all(c("pupil_left", "pupil_right") %in% names(raw()))
+  })
+
   std <- reactive({
     req(raw(), input$col_subject, input$col_trial, input$col_time, input$col_pupil)
+    eyes <- eyes_mode()
     d <- tryCatch(
       standardise_columns(raw(), list(subject = input$col_subject, trial = input$col_trial,
-                                      time = input$col_time, pupil = input$col_pupil,
-                                      blink = input$col_blink, message = input$col_message)),
+                                      time = input$col_time,
+                                      pupil = if (eyes && "pupil" %in% names(raw())) "pupil" else input$col_pupil,
+                                      blink = if (eyes && "blink" %in% names(raw())) "blink" else input$col_blink,
+                                      message = input$col_message)),
       error = function(e) {
         showNotification(conditionMessage(e), type = "error")
         NULL
@@ -949,6 +966,7 @@ server <- function(input, output, session) {
       window = c(input$win_start, input$win_end),
       bin_length = input$bin_length, group_cols = input$group_cols,
       zscore = if (is.null(input$zscore)) "none" else input$zscore,
+      shared_missing = isTRUE(input$shared_missing),
       resample = isTRUE(input$resample),
       target_rate = if (identical(input$rate_target, "set")) input$target_rate else NA
     )
@@ -961,7 +979,8 @@ server <- function(input, output, session) {
       return()
     }
     add_log("---- Run started ----")
-    res <- tryCatch(run_pupil_pipeline(d, params(), log = add_log),
+    res <- tryCatch(if (eyes_mode()) run_pipeline_eyes(d, params(), log = add_log)
+                    else run_pupil_pipeline(d, params(), log = add_log),
                     error = function(e) {
                       add_log("ERROR: ", conditionMessage(e))
                       showNotification(conditionMessage(e), type = "error", duration = 10)
@@ -1062,16 +1081,34 @@ server <- function(input, output, session) {
       fillcolor = fill, line = list(width = 0)))
   }
 
+  output$view_eye_ui <- renderUI({
+    req(isTRUE(result()$eyes))
+    selectInput("view_eye", "Eye", c(Left = "left", Right = "right"),
+                selected = if (is.null(isolate(input$view_eye))) "left" else isolate(input$view_eye), width = "120px")
+  })
+  view_eye <- reactive(if (isTRUE(result()$eyes)) { if (is.null(input$view_eye)) "left" else input$view_eye })
+  # The current trial of the data as loaded, with the viewed eye's pupil
+  raw_trial <- function() {
+    rawt <- std()[as.character(std()$subject) == input$view_subject &
+                    as.character(std()$trial) == input$view_trial, ]
+    e <- view_eye()
+    if (!is.null(e) && paste0("pupil_", e) %in% names(rawt)) rawt$pupil <- rawt[[paste0("pupil_", e)]]
+    rawt
+  }
+  this_eye <- function(df) {
+    e <- view_eye()
+    if (is.null(e) || !"eye" %in% names(df)) rep(TRUE, nrow(df)) else df$eye == e
+  }
+
   # Missing-data summary for the current trial, shown above the plot
   trial_missing <- reactive({
     req(std(), input$view_subject, input$view_trial)
-    rawt <- std()[as.character(std()$subject) == input$view_subject &
-                    as.character(std()$trial) == input$view_trial, ]
+    rawt <- raw_trial()
     raw_miss <- mean(is.na(rawt$pupil) | rawt$pupil <= 0, na.rm = TRUE)
     res <- result()
     clean <- if (!is.null(res) && !isTRUE(input$raw_only)) {
       res$cleaned[as.character(res$cleaned$subject) == input$view_subject &
-                    as.character(res$cleaned$trial) == input$view_trial, ]
+                    as.character(res$cleaned$trial) == input$view_trial & this_eye(res$cleaned), ]
     }
     if (!is.null(clean) && nrow(clean)) {
       list(raw = raw_miss, blink = mean(clean$blink_detected > 0, na.rm = TRUE),
@@ -1143,8 +1180,7 @@ server <- function(input, output, session) {
 
   output$trial_plot <- plotly::renderPlotly({
     req(std(), input$view_subject, input$view_trial)
-    rawt <- std()[as.character(std()$subject) == input$view_subject &
-                    as.character(std()$trial) == input$view_trial, ]
+    rawt <- raw_trial()
 
     if (isTRUE(input$raw_only)) {
       m <- event_markers(rawt)
@@ -1161,7 +1197,7 @@ server <- function(input, output, session) {
 
     rawt$pupil[!is.na(rawt$pupil) & rawt$pupil <= 0] <- NA
     is_this <- function(df) {
-      as.character(df$subject) == input$view_subject & as.character(df$trial) == input$view_trial
+      as.character(df$subject) == input$view_subject & as.character(df$trial) == input$view_trial & this_eye(df)
     }
 
     top <- plotly::plot_ly(rawt, x = ~time, y = ~pupil, type = "scatter", mode = "lines",
@@ -1407,7 +1443,8 @@ server <- function(input, output, session) {
   plot_bins <- reactive({
     req(result(), input$plot_bin)
     vc <- if (is.null(result()$value_col)) "baselinecorrectedp" else result()$value_col
-    bin_for_plot(result()$data, result()$timevar, input$plot_bin, input$plot_conds, value_col = vc)
+    conds <- if (isTRUE(result()$eyes)) unique(c("eye", input$plot_conds)) else input$plot_conds
+    bin_for_plot(result()$data, result()$timevar, input$plot_bin, conds, value_col = vc)
   })
 
   error_spec <- reactive({
@@ -1773,7 +1810,7 @@ server <- function(input, output, session) {
     slider = "missingthresh",
     radio = c("interp_type", "filter", "step_first", "baseline", "baseline_method", "baseline_stat",
               "blink_method", "rate_mode", "asc_eye", "pl_start_mode", "rate_target", "zscore"),
-    checkbox = c("use_blink_col", "use_mad", "timelock", "resample", "pl_aoi"),
+    checkbox = c("use_blink_col", "use_mad", "timelock", "resample", "pl_aoi", "shared_missing"),
     text = c("tobii_onset", "tobii_offset", "pl_subject", "pl_start_messages", "bids_task"),
     select = c("tracker"),
     # These depend on the loaded data, so they are applied once data are loaded

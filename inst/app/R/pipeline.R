@@ -258,6 +258,89 @@ event_onset <- function(time, message, events) {
 
 event_label <- function(events) paste0("'", paste(events, collapse = "' or '"), "'")
 
+# ---- Left and right eyes separately (Eye = Both) -------------------------
+
+# Run the pipeline on the left and the right pupil with identical settings
+# and the same blink mask (`blink` = either eye), keep only trials that pass
+# for both eyes, and stack the results with an `eye` column. With
+# `p$shared_missing`, a sample missing in one eye is set missing in the other
+# too, so both eyes are padded and interpolated over the same gaps.
+run_pipeline_eyes <- function(data, p, log = function(...) NULL) {
+  `%>%` <- dplyr::`%>%`
+  if (!all(c("pupil_left", "pupil_right") %in% names(data))) {
+    stop("Processing the eyes separately needs pupil_left and pupil_right: load a binocular recording with Eye = Both.",
+         call. = FALSE)
+  }
+  bad <- function(v) is.na(v) | v <= 0
+  if (isTRUE(p$shared_missing)) {
+    gone <- bad(data$pupil_left) | bad(data$pupil_right)
+    n_new <- sum(gone & !(bad(data$pupil_left) & bad(data$pupil_right)))
+    log("Same missing samples in both eyes: ", format(n_new, big.mark = ","),
+        " samples missing in only one eye set missing in the other")
+    data$pupil_left[gone] <- NA
+    data$pupil_right[gone] <- NA
+  }
+  log("Processing the left and right eye separately, with the same settings and blink mask (blink in either eye)")
+  one_eye <- function(d, side) {
+    d$pupil <- d[[paste0("pupil_", side)]]
+    d[setdiff(names(d), c("pupil_left", "pupil_right"))]
+  }
+  run_both <- function(d) {
+    sides <- c(left = "left", right = "right")
+    lapply(sides, function(s) run_pupil_pipeline(one_eye(d, s), p,
+                                                 log = function(...) log("[", s, " eye] ", ...)))
+  }
+  kept <- function(r) dplyr::distinct(r$data, subject, trial)
+  r <- run_both(data)
+  q <- dplyr::full_join(r$left$quality, r$right$quality, by = c("subject", "trial"),
+                        suffix = c("_left", "_right"))
+  k <- dplyr::inner_join(kept(r$left), kept(r$right), by = c("subject", "trial"))
+  only <- nrow(kept(r$left)) + nrow(kept(r$right)) - 2 * nrow(k)
+  if (only > 0) {
+    log("Keeping only trials that pass for both eyes: ", only, " trial(s) kept for one eye only are excluded, ",
+        "and both eyes are re-run on the same ", nrow(k), " trials")
+    if (!nrow(k)) stop("No trial passed for both eyes.", call. = FALSE)
+    r <- run_both(dplyr::semi_join(data, k, by = c("subject", "trial")))
+    k <- dplyr::inner_join(kept(r$left), kept(r$right), by = c("subject", "trial"))
+  }
+  # One quality row per trial: excluded if either eye fails
+  final <- paste(k$subject, k$trial)
+  q <- q %>%
+    dplyr::mutate(
+      samples = dplyr::coalesce(samples_left, samples_right),
+      prop_missing = pmax(prop_missing_left, prop_missing_right, na.rm = TRUE),
+      subject_prop_missing = pmax(subject_prop_missing_left, subject_prop_missing_right, na.rm = TRUE),
+      reason = dplyr::case_when(
+        paste(subject, trial) %in% final ~ "kept",
+        reason_left != "kept" & reason_right != "kept" & reason_left == reason_right ~ reason_left,
+        reason_left != "kept" ~ paste("left eye:", reason_left),
+        reason_right != "kept" ~ paste("right eye:", reason_right),
+        TRUE ~ "excluded with the other eye"),
+      excluded = reason != "kept") %>%
+    dplyr::select(subject, trial, samples, prop_missing, prop_missing_left, prop_missing_right,
+                  subject_prop_missing, reason, excluded)
+  stack <- function(part) {
+    out <- dplyr::bind_rows(lapply(c("left", "right"), function(s) {
+      x <- r[[s]][[part]]
+      x$eye <- rep(s, nrow(x))
+      x
+    }))
+    if (part == "data") out <- dplyr::semi_join(out, k, by = c("subject", "trial"))
+    out
+  }
+  d <- stack("data")
+  cleaned <- stack("cleaned")
+  timevar <- r$left$timevar
+  value_col <- output_column(p)
+  aggvars <- unique(c(p$group_cols, "eye", "timebins"))
+  log("Binning into ", p$bin_length, " ms bins by ", paste(aggvars, collapse = ", "))
+  binned <- gazer::downsample_gaze(d, bin.length = p$bin_length, timevar = timevar,
+                                   aggvars = aggvars, type = "pupil", pupil = value_col)
+  log("Done: ", nrow(k), " trials retained for both eyes")
+  list(data = d, binned = binned, quality = q, cleaned = cleaned, timevar = timevar, params = p,
+       value_col = value_col, rates = r$left$rates, rates_original = r$left$rates_original, eyes = TRUE)
+}
+
 # Error listing why every trial was excluded.
 all_excluded_error <- function(quality, p) {
   tab <- table(quality$reason)
@@ -374,7 +457,6 @@ run_pipeline_core <- function(data, p, log = function(...) NULL, stop_if_empty =
       d <- downsample_subjects(d, rates, target)
     }
     if (nrow(lo)) {
-      if ((1000 / target) %% 1 != 0) stop("Upsampling needs a target rate with a whole-millisecond step (e.g. 1000, 500, 250 Hz).", call. = FALSE)
       log("Upsampling ", paste(sprintf("%s (%g Hz)", lo$subject, lo$hz), collapse = ", "), " to ", target, " Hz")
       d <- upsample_subjects(d, rates, target)
     }
@@ -854,6 +936,7 @@ column_descriptions <- c(
   interp = "Pupil after interpolation, before smoothing (when interpolating first).",
   index = "Sample index used for cubic-spline interpolation.",
   pup_interp = "Pupil after interpolation and smoothing (and low-pass filtering, if used).",
+  eye = "Eye processed (left or right), when Eye = Both processes the eyes separately. Every other column is for that eye.",
   pup_z = "Re-scaled pupil: baselinecorrectedp minus the participant's (or trial's) mean, divided by its SD. Present only if z-scoring was used; it is then the value that is binned and plotted.",
   baseline = "Baseline pupil size for the trial (median or mean of the baseline period, as chosen). For divisive correction with a fixed window: per participant.",
   resampled = "TRUE for samples inserted by resampling onto a uniform grid (dropped samples; treated as missing).",
@@ -981,7 +1064,11 @@ methods_paragraph <- function(res, meta) {
   }
   eye <- meta$eye
   pcol <- if (is.null(meta$pupil_col)) "pupil" else meta$pupil_col
-  if (!isTRUE(meta$binocular)) {
+  if (isTRUE(res$eyes)) {
+    s <- c(s, paste0("The left and right pupil were pre-processed separately with identical settings and the same blink mask (a sample was treated as part of a blink if either eye was blinking)",
+                     if (isTRUE(p$shared_missing)) "; samples missing in either eye were treated as missing in both" else "",
+                     ". Only trials that met the inclusion criteria for both eyes were analysed."))
+  } else if (!isTRUE(meta$binocular)) {
     if (!is.null(meta$mono_eye) && meta$mono_eye %in% c("left", "right")) {
       s <- c(s, sprintf("The %s eye was recorded.", meta$mono_eye))
     }
@@ -1130,7 +1217,7 @@ downsample_subjects <- function(d, rates, target_hz) {
 resample_uniform <- function(d) {
   parts <- lapply(split(d, as.character(d$subject)), function(sd) {
     hz <- sd$.hz[1]
-    if (!is.finite(hz) || hz <= 0 || (1000 / hz) %% 1 != 0) return(sd)  # needs whole-ms steps
+    if (!is.finite(hz) || hz <= 0) return(sd)
     u <- gazer::resample_gaze(sd, target_hz = hz, hz = hz)
     if ("tracker_time" %in% names(u)) u$tracker_time[u$resampled] <- NA
     u
@@ -1156,8 +1243,20 @@ html_table <- function(df) {
 
 # A self-contained HTML report (images embedded) for one participant:
 # summary, exclusions, signal at each step, every trial, and parameters.
-qc_report_html <- function(res, raw, subject, meta) {
+qc_report_html <- function(res, raw, subject, meta, eye = NULL) {
   `%>%` <- dplyr::`%>%`
+  # Eyes processed separately: one section per eye
+  if (isTRUE(res$eyes) && is.null(eye)) {
+    parts <- vapply(c("left", "right"), function(e) qc_report_html(res, raw, subject, meta, eye = e), "")
+    inner <- sub("(?s).*<body>(.*)</body>.*", "\\1", parts, perl = TRUE)
+    head <- sub("(?s)<body>.*", "<body>", parts[1], perl = TRUE)
+    return(paste0(head, paste(inner, collapse = "<hr>"), "</body></html>"))
+  }
+  if (!is.null(eye)) {
+    res$data <- res$data[res$data$eye == eye, ]
+    res$cleaned <- res$cleaned[res$cleaned$eye == eye, ]
+    raw$pupil <- raw[[paste0("pupil_", eye)]]
+  }
   sid <- as.character(subject)
   q <- res$quality[as.character(res$quality$subject) == sid, ]
   rawp <- raw[as.character(raw$subject) == sid, ]
@@ -1248,7 +1347,7 @@ qc_report_html <- function(res, raw, subject, meta) {
 h1{font-size:1.6rem}h2{font-size:1.15rem;margin-top:2rem;border-bottom:1px solid #dee2e6;padding-bottom:.3rem}
 table{border-collapse:collapse;font-size:.85rem;margin:.5rem 0}td,th{border:1px solid #dee2e6;padding:.3rem .6rem;text-align:left}
 th{background:#f1f3f5}img{max-width:100%;margin:.5rem 0}.muted{color:#868e96;font-size:.85rem}</style></head><body>',
-    '<h1>shiny gazeR QC report: ', esc(sid), '</h1>',
+    '<h1>shiny gazeR QC report: ', esc(sid), if (!is.null(eye)) paste0(" (", eye, " eye)"), '</h1>',
     '<p class="muted">Generated ', format(Sys.time(), "%Y-%m-%d %H:%M"), ' with shiny gazeR ', esc(meta$app_version),
     ' and gazeR ', esc(meta$gazer_version), '.</p>',
     '<h2>Summary</h2>', html_table(summary),

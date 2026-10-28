@@ -1,5 +1,10 @@
 # shinygazer 0.3.6
 
+* Eye = Both now processes the left and right eye separately, for comparing
+  the eyes: identical settings, the same blink mask (either eye), optionally
+  the same missing samples, and only trials that pass for both eyes. Results
+  have an `eye` column; plots, the trial viewer, QC reports and the methods
+  paragraph follow it.
 * Binocular "Average": pupil, x and y are the monocular mean (both eyes'
   mean, or the one valid eye), as EyeLink reports the average eye, for all
   trackers (gazer >= 0.2.12). Help, data dictionary and methods paragraph
