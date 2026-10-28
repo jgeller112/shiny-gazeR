@@ -1402,10 +1402,10 @@ write_bids <- function(root, res, raw, meta, task = "task") {
     proc <- res$data[as.character(res$data$subject) == sid, ]
     rw <- raw[as.character(raw$subject) == sid, ]
     cl <- res$cleaned[as.character(res$cleaned$subject) == sid, ]
-    if (nrow(proc)) data.table::fwrite(proc, paste0(stem, "_desc-preproc_timeseries.csv"))
+    if (nrow(proc)) data.table::fwrite(proc, paste0(stem, "_desc-preproc_timeseries.csv"), na = "n/a")
     if ("message" %in% names(rw)) {
       ev <- rw[!is.na(rw$message), intersect(c("subject", "trial", "time", "tracker_time", "message"), names(rw))]
-      data.table::fwrite(ev, paste0(stem, "_events.csv"))
+      data.table::fwrite(ev, paste0(stem, "_events.csv"), na = "n/a")
     }
     if (nrow(cl)) {
       bl <- cl %>% dplyr::arrange(trial, time) %>% dplyr::group_by(trial) %>%
@@ -1413,13 +1413,13 @@ write_bids <- function(root, res, raw, meta, task = "task") {
         dplyr::filter(blink_detected > 0) %>% dplyr::group_by(trial, run) %>%
         dplyr::summarise(start = min(time), end = max(time), .groups = "drop") %>%
         dplyr::mutate(duration_ms = end - start) %>% dplyr::select(-run)
-      data.table::fwrite(bl, paste0(stem, "_blinks.csv"))
+      data.table::fwrite(bl, paste0(stem, "_blinks.csv"), na = "n/a")
     }
     if (!is.null(res$binned) && "subject" %in% names(res$binned)) {
       b <- res$binned[as.character(res$binned$subject) == sid, ]
-      if (nrow(b)) data.table::fwrite(b, paste0(stem, "_desc-binned_pupil.csv"))
+      if (nrow(b)) data.table::fwrite(b, paste0(stem, "_desc-binned_pupil.csv"), na = "n/a")
     }
-    data.table::fwrite(res$quality[as.character(res$quality$subject) == sid, ], paste0(stem, "_desc-quality_trials.csv"))
+    data.table::fwrite(res$quality[as.character(res$quality$subject) == sid, ], paste0(stem, "_desc-quality_trials.csv"), na = "n/a")
     rate <- res$rates$hz[res$rates$subject == sid]
     cols <- stats::setNames(as.list(dict$description), dict$column)
     jsonlite::write_json(list(SamplingFrequency = if (length(rate)) rate[1] else NULL,

@@ -1638,7 +1638,7 @@ server <- function(input, output, session) {
   )
   output$dl_cpt_csv <- downloadHandler(
     filename = function() paste0(stamp("cluster_test"), ".csv"),
-    content = function(file) data.table::fwrite(cpt_res()$clusters, file)
+    content = function(file) data.table::fwrite(cpt_res()$clusters, file, na = "NA")
   )
 
   plot_bins <- reactive({
@@ -1850,7 +1850,7 @@ server <- function(input, output, session) {
 
   output$dl_plot_values <- downloadHandler(
     filename = function() paste0("gazer_", input$plot_type, "_", format(Sys.time(), "%Y%m%d-%H%M"), ".csv"),
-    content = function(file) data.table::fwrite(plot_values(), file)
+    content = function(file) data.table::fwrite(plot_values(), file, na = "NA")
   )
 
   output$binned_table <- DT::renderDT({
@@ -1868,7 +1868,7 @@ server <- function(input, output, session) {
       content = function(file) {
         req(result())
         data.table::fwrite(switch(what, samples = result()$data, binned = result()$binned,
-                                  quality = result()$quality), file)
+                                  quality = result()$quality), file, na = "NA")
       }
     )
   }
@@ -1928,14 +1928,14 @@ server <- function(input, output, session) {
       parts <- split(d, as.character(d$subject))
       paths <- vapply(names(parts), function(sid) {
         f <- file.path(dir, paste0(gsub("[^A-Za-z0-9_.-]", "_", sid), "_", label, ".csv"))
-        data.table::fwrite(parts[[sid]], f)
+        data.table::fwrite(parts[[sid]], f, na = "NA")
         f
       }, character(1))
       dict <- file.path(dir, "data_dictionary.csv")
       data.table::fwrite(data_dictionary(stats::setNames(list(d), label)), dict)
       zip::zip(file, files = c(basename(paths), "data_dictionary.csv"), root = dir)
     } else {
-      data.table::fwrite(d, file)
+      data.table::fwrite(d, file, na = "NA")
     }
   }
 

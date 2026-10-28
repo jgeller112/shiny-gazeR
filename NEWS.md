@@ -1,5 +1,8 @@
 # shinygazer 0.3.6
 
+* CSV downloads write missing values as `NA` (and `n/a` in the BIDS-like
+  export) instead of empty cells, so tracker loss (which the old
+  `parse_asc()` wrote as `1e+08` for gaze) is clearly marked missing.
 * Reads the gzipped example data shipped with gazer >= 0.2.13 (falls back to
   the older .xls), and gzipped (.gz) delimited uploads, decompressing with
   base R.
