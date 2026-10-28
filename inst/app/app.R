@@ -741,9 +741,11 @@ server <- function(input, output, session) {
     r <- detected_rates()
     rates <- sort(unique(stats::na.omit(r$hz)))
     if (length(rates) <= 1) {
-      return(numericInput("hz", info("Sampling rate (Hz)",
-                                     "Read from the file header for EyeLink .asc files, otherwise estimated from the time column. Change it only if it's wrong."),
-                          if (length(rates)) rates else NA, min = 1))
+      return(tagList(
+        numericInput("hz", info("Recorded rate (Hz)",
+                                "The rate the data were recorded at: read from the file header for EyeLink .asc files, otherwise estimated from the time column. Change it only if it's wrong. To change the rate of the data, use Resample below."),
+                     if (length(rates)) rates else NA, min = 1),
+        uiOutput("hz_warning")))
     }
     groups <- vapply(rates, function(hz) {
       who <- r$subject[r$hz == hz]
@@ -761,6 +763,20 @@ server <- function(input, output, session) {
                      "Use each participant's own rate" = "own"),
                    selected = if (is.null(current)) "upsample" else current)
     )
+  })
+
+  # Changing the recorded rate relabels the data; it does not resample them
+  output$hz_warning <- renderUI({
+    r <- sort(unique(stats::na.omit(detected_rates()$hz)))
+    req(length(r) == 1, isTRUE(is.finite(input$hz)), input$hz != r)
+    div(class = "alert alert-warning small py-2 mb-2",
+        icon("triangle-exclamation"),
+        sprintf(" The file says %g Hz. This box only corrects a wrong rate: it does not resample the data. To resample to %g Hz, choose Resample all to below.", r, input$hz))
+  })
+  # Start the target rate at the highest recorded rate
+  observeEvent(detected_rates(), {
+    r <- stats::na.omit(detected_rates()$hz)
+    if (length(r)) updateNumericInput(session, "target_rate", value = max(r))
   })
 
   # ---- Data tab -----------------------------------------------------------
@@ -785,6 +801,13 @@ server <- function(input, output, session) {
     }
     n_tr <- nrow(dplyr::distinct(d, subject, trial))
     miss <- mean(is.na(d$pupil) | d$pupil <= 0, na.rm = TRUE)
+    rr <- result()$rates
+    tagList(
+    p(class = "small text-muted mb-2", icon("circle-info"),
+      " Data as loaded, before any processing or resampling.",
+      if (!is.null(rr) && !identical(rr$hz, result()$rates_original$hz))
+        sprintf(" The last run resampled to %s Hz: see Processed samples on the Export tab.",
+                paste(unique(rr$hz), collapse = "/"))),
     layout_columns(
       fill = FALSE,
       value_box("Samples", format(nrow(d), big.mark = ","), showcase_layout = "left center", showcase = icon("list-ol"), theme = "primary"),
@@ -792,7 +815,7 @@ server <- function(input, output, session) {
       value_box("Trials", format(n_tr, big.mark = ","), showcase_layout = "left center", showcase = icon("layer-group")),
       value_box("Missing pupil", sprintf("%.1f%%", 100 * miss), showcase_layout = "left center", showcase = icon("eye-slash"),
                 theme = if (miss > 0.25) "warning" else NULL)
-    )
+    ))
   })
   observeEvent(input$load_example_2, load_example())
 
@@ -920,8 +943,13 @@ server <- function(input, output, session) {
                     })
     req(res)
     result(res)
+    updateSelectInput(session, "dl_dataset", selected = "processed")
     q <- res$quality
-    showNotification(sprintf("Done: %d of %d trials retained.", sum(!q$excluded), nrow(q)),
+    resampled <- !identical(res$rates$hz, res$rates_original$hz)
+    showNotification(sprintf("Done: %d of %d trials retained.%s", sum(!q$excluded), nrow(q),
+                             if (resampled) sprintf(" Processed at %s Hz (%s samples).",
+                                                    paste(unique(res$rates$hz), collapse = "/"),
+                                                    format(nrow(res$data), big.mark = ",")) else ""),
                      type = "message")
     subs <- sort(unique(as.character(d$subject)))
     updateSelectInput(session, "view_subject", choices = subs,

@@ -364,7 +364,7 @@ run_pipeline_core <- function(data, p, log = function(...) NULL, stop_if_empty =
       log("Upsampling ", paste(sprintf("%s (%g Hz)", lo$subject, lo$hz), collapse = ", "), " to ", target, " Hz")
       d <- upsample_subjects(d, rates, target)
     }
-    if (!nrow(hi) && !nrow(lo)) log("Sampling rate: ", target, " Hz (already at the target rate)")
+    if (!nrow(hi) && !nrow(lo)) log("Sampling rate: ", target, " Hz (already at the target rate, so not resampled)")
     rates$hz <- target
   } else if (identical(p$rate_mode, "upsample") && any(rates$hz < target)) {
     {

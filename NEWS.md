@@ -7,6 +7,13 @@
   runs into trials. Works for EyeLink, Tobii and Pupil Labs conversions:
   pupil in mm sets the 2–9 mm range, and data without blink events switch
   to noise-based blink detection.
+* Sampling rate: the box in step 1 is now "Recorded rate (Hz)" and warns
+  when changed from the file's rate, since it relabels the data rather than
+  resampling them. The "Resample all to" target starts at the highest
+  recorded rate instead of 500 Hz.
+* After a run, the Export tab selects Processed samples, the Data tab notes
+  that it shows the data as loaded (and the rate of the last run), and the
+  "Done" message gives the processing rate and sample count.
 
 # shinygazer 0.3.5
 
