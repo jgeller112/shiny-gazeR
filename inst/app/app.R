@@ -120,6 +120,7 @@ sidebar_ui <- sidebar(
                     "EyeLink (.asc)" = "eyelink",
                     "SR Data Viewer sample report" = "sr",
                     "Tobii (Titta)" = "tobii",
+                    "Tobii Pro Lab (.tsv)" = "prolab",
                     "Pupil Labs Neon" = "pupillabs",
                     "BIDS (eye-tracking)" = "bids",
                     "gazeR / other CSV" = "generic")),
@@ -147,10 +148,13 @@ sidebar_ui <- sidebar(
                          textInput("pl_subject", info("Subject ID", "Used for loose CSVs. For a .zip, each recording folder name becomes the subject."), "sub01")
                        ),
                        checkboxInput("pl_aoi", info("Use surface (AOI) data", "Reads gaze_surface.csv from the Marker Mapper enrichment and adds gaze_detected_on_surface plus normalised surface x/y."), FALSE)),
+      conditionalPanel("input.tracker == 'prolab'",
+                       textInput("prolab_trial_start", info("Trial start messages", "Optional, comma-separated. Leave blank and each stimulus presentation (Presented Stimulus name) is a trial; calibration is dropped. Or list events (e.g. TrialStart) and a new trial starts at each event beginning with one of these."),
+                                 placeholder = "blank = one trial per stimulus")),
       conditionalPanel("input.tracker == 'bids'",
                        textInput("bids_trial_start", info("Trial start messages", "Comma-separated. A new trial starts at each event message beginning with one of these (e.g. TRIALID for EyeLink data), and time is ms from it. Leave blank to treat each run as one trial (e.g. resting state)."),
                                  placeholder = "e.g. TRIALID")),
-      conditionalPanel("['auto', 'eyelink', 'tobii', 'bids'].indexOf(input.tracker) >= 0",
+      conditionalPanel("['auto', 'eyelink', 'tobii', 'prolab', 'bids'].indexOf(input.tracker) >= 0",
                        radioButtons("asc_eye", info("Eye (binocular)", "Average: pupil, x and y are the mean of both eyes, only where both are valid; blink is 1 if either eye is blinking. Both: also keeps pupil_left / pupil_right, x/y and blink_left / blink_right for each eye, so you can map one eye below (use its matching blink column). Changing this re-reads the files."),
                                     c(Average = "average", Left = "left", Right = "right", Both = "both"), inline = TRUE)),
       actionLink("load_example", tagList(icon("flask"), "Try the example data")),
@@ -485,6 +489,7 @@ server <- function(input, output, session) {
       sr = "Data Viewer sample reports (.xls/.txt, tab-delimited). Time is taken as TIMESTAMP − IP_START_TIME.",
       tobii = "Gaze CSVs here, message CSVs below. Each subject's two files must have the same name. Tobii has no blink events, so noise-based blink detection is turned on.",
       pupillabs = "Upload a .zip of the Pupil Cloud Time Series export (one folder per recording, each becomes a subject), or gaze.csv, 3d_eye_states.csv and events.csv from one recording. The plausible pupil range is set to 2–9 mm.",
+      prolab = "Tab-separated data exports from Tobii Pro Lab (Analyze > Data Export, .tsv), one or more; a file can hold several participants. Include pupil diameter, validity, eye movement type and (if your tracker has it) eye openness. Pupil is in mm (range set to 2–9 mm). Blinks are Pro Lab's own Blink samples plus gaps where the pupil was lost.",
       bids = "Upload a .zip of a BIDS dataset (BEP020 eye-tracking), or the *_physio.tsv.gz files with their .json sidecars and *_physioevents files. Each sub/ses/task/run becomes a subject; left- and right-eye recordings are merged.",
       generic = "One row per sample, with subject, trial, time (ms) and pupil columns, e.g. output from parse_asc().")
     p(class = "text-muted small mb-2", hint)
@@ -494,7 +499,8 @@ server <- function(input, output, session) {
   # Tracker-specific defaults
   observeEvent(input$tracker, {
     if (input$tracker == "tobii") updateRadioButtons(session, "blink_method", selected = "hershman")
-    if (input$tracker == "pupillabs") {
+    if (input$tracker == "prolab") updateRadioButtons(session, "blink_method", selected = "tracker")
+    if (input$tracker %in% c("pupillabs", "prolab")) {
       updateNumericInput(session, "pupil_min", value = 2)
       updateNumericInput(session, "pupil_max", value = 9)
     }
@@ -526,6 +532,12 @@ server <- function(input, output, session) {
                               start_messages = if (length(starts)) starts else NULL,
                               max_event_lag_ms = input$pl_lag, aoi = isTRUE(input$pl_aoi))
       },
+      prolab = {
+        starts <- trimws(unlist(strsplit(if (is.null(input$prolab_trial_start)) "" else input$prolab_trial_start, ",")))
+        starts <- starts[nzchar(starts)]
+        read_prolab_upload(f$datapath, f$name, eye = input$asc_eye,
+                           trial_start = if (length(starts)) starts else NULL)
+      },
       bids = {
         starts <- trimws(unlist(strsplit(if (is.null(input$bids_trial_start)) "" else input$bids_trial_start, ",")))
         starts <- starts[nzchar(starts)]
@@ -539,7 +551,7 @@ server <- function(input, output, session) {
   observeEvent(list(input$files, input$msg_files, input$asc_eye, input$tracker,
                     input$tobii_onset, input$tobii_offset, input$pl_subject,
                     input$pl_start_mode, input$pl_start_messages, input$pl_lag, input$pl_aoi,
-                    input$bids_trial_start), {
+                    input$bids_trial_start, input$prolab_trial_start), {
     req(input$files)
     if (input$tracker == "tobii" && is.null(input$msg_files)) return()
     d <- tryCatch(withProgress(message = "Reading files", value = 0.3, read_uploads()),
@@ -826,7 +838,7 @@ server <- function(input, output, session) {
   # Missing data and blinks per participant and eye, from the data as loaded
   eye_stats <- reactive({
     req(std())
-    label <- if (input$tracker %in% c("auto", "eyelink", "tobii", "bids") && !is.null(input$asc_eye) &&
+    label <- if (input$tracker %in% c("auto", "eyelink", "tobii", "prolab", "bids") && !is.null(input$asc_eye) &&
                  input$asc_eye %in% c("left", "right", "average")) {
       c(left = "left", right = "right", average = "average (both eyes)")[[input$asc_eye]]
     } else "pupil"
@@ -1836,6 +1848,7 @@ server <- function(input, output, session) {
       eyelink = "an SR Research EyeLink eye tracker",
       sr = "an SR Research EyeLink eye tracker (samples exported with Data Viewer)",
       tobii = "a Tobii eye tracker (recorded with Titta)",
+      prolab = "a Tobii eye tracker (data exported from Tobii Pro Lab)",
       pupillabs = "Pupil Labs Neon eye-tracking glasses",
       bids = if (length(makers)) paste("an eye tracker from", paste(makers, collapse = " / ")) else "",
       auto = if (length(files) && all(grepl("\\.asc(\\.gz)?$", files, ignore.case = TRUE)))
@@ -1845,7 +1858,7 @@ server <- function(input, output, session) {
     list(tracker = tracker,
          binocular = identical(input$tracker, "tobii") || "both" %in% rec,
          mono_eye = if (length(rec) == 1 && rec != "both") rec else NULL,
-         eye = if (input$tracker %in% c("auto", "eyelink", "tobii", "bids")) input$asc_eye else NA,
+         eye = if (input$tracker %in% c("auto", "eyelink", "tobii", "prolab", "bids")) input$asc_eye else NA,
          pupil_col = input$col_pupil,
          gazer_version = gazer_version, app_version = app_version)
   })
@@ -1866,7 +1879,7 @@ server <- function(input, output, session) {
         "Generated from this run's settings and results. Check it, and edit event names, conditions and wording to suit your paper."),
       div(id = "methods_text", class = "methods-text", m$text),
       h6(class = "mt-3", "References"),
-      tags$ul(class = "small", lapply(m$references, function(r) tags$li(markdown::mark_html(r, template = FALSE) |> HTML()))),
+      tags$ul(class = "small", lapply(m$references, function(r) tags$li(markdown::mark_html(text = r, template = FALSE) |> HTML()))),
       div(class = "d-flex gap-2",
           tags$button(class = "btn btn-sm btn-primary", type = "button",
                       onclick = "navigator.clipboard.writeText(document.getElementById('methods_text').innerText); this.innerText = 'Copied';",

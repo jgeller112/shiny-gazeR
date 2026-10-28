@@ -120,6 +120,19 @@ read_pupillabs_upload <- function(paths, names, subject = "sub01", ...) {
   tibble::as_tibble(dplyr::bind_rows(out))
 }
 
+# Tobii Pro Lab data exports (.tsv), read with gazer::read_tobii_prolab().
+# `...` goes to read_tobii_prolab() (eye, trial_start).
+read_prolab_upload <- function(paths, names, ...) {
+  ok <- grepl("\\.(tsv|txt)(\\.gz)?$", names, ignore.case = TRUE)
+  if (!any(ok)) stop("Upload the .tsv data export from Tobii Pro Lab.", call. = FALSE)
+  out <- lapply(which(ok), function(i) {
+    d <- gazer::read_tobii_prolab(paths[i], ...)
+    d$source_file <- names[i]
+    d
+  })
+  tibble::as_tibble(data.table::rbindlist(out, fill = TRUE))
+}
+
 # BIDS eye-tracking (BEP020), read with gazer::read_bids_eyetrack(). Either a
 # .zip of the dataset (any depth) or the loose *_physio.tsv.gz files with
 # their .json sidecars (and *_physioevents files). `...` goes to

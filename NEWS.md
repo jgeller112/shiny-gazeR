@@ -1,5 +1,10 @@
 # shinygazer 0.3.6
 
+* Tobii Pro Lab input: choose **Tobii Pro Lab (.tsv)** and upload data
+  exports, read with gazer::read_tobii_prolab() (needs gazer >= 0.2.12).
+  Trials follow the presented stimulus (calibration dropped) or start at
+  listed events. Blinks come from Pro Lab's Blink classification (eye
+  openness, where measured) plus pupil-loss gaps; a 2–9 mm range is set.
 * BIDS eye-tracking input: choose **BIDS (eye-tracking)** and upload a .zip
   of a BEP020 dataset (or the *_physio.tsv.gz files with their sidecars and
   events). Read with `gazer::read_bids_eyetrack()` (needs gazer >= 0.2.11).
