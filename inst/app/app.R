@@ -1451,13 +1451,13 @@ server <- function(input, output, session) {
     card(
       card_header(tagList(icon("layer-group"), " Cluster-based permutation test")),
       p(class = "small text-muted",
-        "Where in time do the conditions differ? A mixed model is fit in every time bin (plot bin above); ",
+        "Where in time do the conditions differ? A mixed model is fit in every time bin (the binned data from step 5 for subject means; the plot bin for trials); ",
         "adjacent bins past the threshold form clusters, and each cluster's summed statistic is compared with ",
         "the largest cluster found when the condition labels are shuffled within subjects (Maris & Oostenveld, 2007)."),
       layout_columns(
         col_widths = c(3, 3, 2, 2, 2), gap = "0.75rem",
         selectInput("cpt_cond", "Condition", conds, selected = keep("cpt_cond", intersect(input$plot_conds, conds)[1])),
-        radioButtons("cpt_model", info("Model", "Subject means: one value per subject, condition and bin, with a random intercept per subject. Trials: every trial, with random intercepts per subject (and item, if chosen); slower."),
+        radioButtons("cpt_model", info("Model", "Subject means: the binned data from step 5 (aggbaseline per subject, condition and time bin; Group by must include subject and the condition), with a random intercept per subject. Trials: every trial binned at the plot bin, with random intercepts per subject (and item, if chosen); slower."),
                      c("Subject means" = "subject", "Trials" = "trial"), selected = keep("cpt_model", "subject")),
         numericInput("cpt_from", "From (ms)", keep("cpt_from", win[1])),
         numericInput("cpt_to", "To (ms)", keep("cpt_to", win[2])),
@@ -1510,15 +1510,33 @@ server <- function(input, output, session) {
       showNotification("The condition needs at least two levels in the data.", type = "error")
       return()
     }
-    n_sub <- length(unique(x$subject))
     unit <- if (identical(input$cpt_model, "trial")) c("subject", "trial", if (cond == "eye") "eye") else c("subject", "condition")
     if (identical(input$cpt_model, "subject")) {
-      x <- stats::aggregate(pupil ~ subject + condition + timebins, data = x, FUN = mean)
+      # Subject means: the binned data from step 5 (Group by), as exported
+      b <- res$binned
+      need <- c("subject", cond)
+      if (!all(need %in% names(b))) {
+        showNotification(paste0("The Subject means model uses the binned data, which must be grouped by ",
+                                paste(setdiff(need, names(b)), collapse = " and "),
+                                ". Add it to Group by (step 5) and run again, or use the Trials model."),
+                         type = "error", duration = 12)
+        return()
+      }
+      if (isTRUE(res$eyes) && cond != "eye") b <- b[b$eye == input$cpt_eye, ]
+      if (isTRUE(is.finite(input$cpt_from))) b <- b[b$timebins >= input$cpt_from, ]
+      if (isTRUE(is.finite(input$cpt_to))) b <- b[b$timebins <= input$cpt_to, ]
+      x <- data.frame(subject = as.character(b$subject), condition = b[[cond]],
+                      pupil = b$aggbaseline, timebins = b$timebins)
+      x <- x[!is.na(x$condition) & !is.na(x$pupil), ]
+      bin <- if (length(unique(x$timebins)) > 1) min(diff(sort(unique(x$timebins)))) else res$params$bin_length
     }
+    n_sub <- length(unique(x$subject))
     re <- c(if (n_sub > 1) "(1 | subject)", if (!is.null(item)) "(1 | item)")
     f <- stats::as.formula(paste("pupil ~ condition", if (length(re)) paste("+", paste(re, collapse = " + "))))
     if (n_sub == 1 && identical(input$cpt_model, "subject")) {
-      showNotification("With one participant, use the Trials model.", type = "error")
+      showNotification(paste0("Only one participant (", x$subject[1], ") has data for this test, so subject means can't be compared. ",
+                              "If others were excluded, see the Quality tab; or use the Trials model."),
+                       type = "error", duration = 12)
       return()
     }
     n_perm <- max(10, round(input$cpt_nperm))
