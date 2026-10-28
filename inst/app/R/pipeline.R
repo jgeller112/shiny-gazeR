@@ -12,7 +12,7 @@ read_gazer_files <- function(paths, names = basename(paths), eye = "average") {
       d$eyes_recorded <- attr(d, "asc_info")$recorded_eyes
       attr(d, "asc_info") <- NULL
     } else {
-      d <- data.table::fread(paths[i], na.strings = c("NA", "."), fill = TRUE)
+      d <- data.table::fread(ungzip(paths[i]), na.strings = c("NA", "."), fill = TRUE)
       # SR Data Viewer sample reports: trial-relative time in ms
       if (all(c("TIMESTAMP", "IP_START_TIME") %in% names(d))) {
         d$sr_trial_time <- d$TIMESTAMP - d$IP_START_TIME
@@ -22,6 +22,21 @@ read_gazer_files <- function(paths, names = basename(paths), eye = "average") {
     d
   })
   tibble::as_tibble(data.table::rbindlist(dfs, fill = TRUE))
+}
+
+# fread() needs R.utils for .gz files, so decompress them with base R into a
+# temporary file first (in chunks, so large files aren't read into memory)
+ungzip <- function(path) {
+  if (!grepl("\\.gz$", path, ignore.case = TRUE)) return(path)
+  out <- tempfile(fileext = ".txt")
+  con <- gzfile(path, "rb"); dst <- file(out, "wb")
+  on.exit({ close(con); close(dst) })
+  repeat {
+    b <- readBin(con, "raw", 1e7)
+    if (!length(b)) break
+    writeBin(b, dst)
+  }
+  out
 }
 
 # Copy uploaded files into a fresh folder under their original names, since

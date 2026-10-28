@@ -18,7 +18,9 @@ library(bslib)
 
 options(shiny.maxRequestSize = 2 * 1024^3)  # allow uploads up to 2 GB
 
-example_path <- system.file("extdata", "pupil_sample_files_edf.xls", package = "gazer")
+# gazer >= 0.2.13 ships the example gzipped; older versions as .xls
+example_path <- Filter(nzchar, c(system.file("extdata", "pupil_sample_files_edf.xls.gz", package = "gazer"),
+                                 system.file("extdata", "pupil_sample_files_edf.xls", package = "gazer")))[1]
 gazer_version <- as.character(utils::packageVersion("gazer"))
 app_version <- as.character(utils::packageVersion("shinygazer"))
 

@@ -1,5 +1,8 @@
 # shinygazer 0.3.6
 
+* Reads the gzipped example data shipped with gazer >= 0.2.13 (falls back to
+  the older .xls), and gzipped (.gz) delimited uploads, decompressing with
+  base R.
 * Results: multilevel cluster-based permutation test (Maris & Oostenveld,
   2007). A mixed model per time bin (subject means or trials, optional item
   intercept), labels shuffled within subjects, cluster p-values; figure with
