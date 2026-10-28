@@ -87,6 +87,8 @@ The log and the parameters file record each participant's rate and which option 
   *Order* (interpolate first or smooth first) applies to moving average and Hanning.
 
 ### 4 · Baseline & time-lock
+
+**Re-scaling: Z-score pupil** (optional) comes after baseline correction. The baseline-corrected pupil has the participant's mean subtracted and is divided by their SD, over all their kept trials. This puts participants with different pupil sizes or tracker units on one scale while keeping the differences between their trials and conditions, and results, plots and binned data are then in SD units. Z-scoring each trial separately isn't offered: it would make every trial average 0 with SD 1, erasing each trial's size of response (usually the effect of interest). `gazeR::zscore_pupil(by = "trial")` can do it in code. The z-scored values are the `pup_z` column; `baselinecorrectedp` is kept. `gazeR::zscore_pupil()`
 - **Before an event**: the median or mean of the *N* ms before the chosen message, per trial.
 - **Fixed window**: the baseline between two time stamps, per trial for subtractive correction. Divisive correction with a fixed window uses a per-subject baseline.
 - **Baseline value: Median or Mean.** The median (gazeR's default) or the mean of the pupil in the baseline period. Mathôt & Vilotijević (2022) recommend subtractive correction, per trial, using the mean of a short baseline period.

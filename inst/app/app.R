@@ -253,6 +253,10 @@ sidebar_ui <- sidebar(
                        radioButtons("baseline_stat", info("Baseline value",
                                                           "Median (gazeR's default) or mean of the pupil in the baseline period, per trial. Mathôt & Vilotijević (2022) recommend the mean of a short baseline period, with subtractive correction."),
                                     c(Median = "median", Mean = "mean"), inline = TRUE)),
+      tags$div(class = "section-label", "Re-scaling"),
+      radioButtons("zscore", info("Z-score pupil",
+                                  "After baseline correction: subtract each participant's mean and divide by their SD, over all their kept trials. Puts participants with different pupil sizes or units on one scale while keeping differences between their trials and conditions; results are then in SD units. gazeR::zscore_pupil()"),
+                   c(None = "none", "Per participant" = "subject"), inline = TRUE),
       tags$div(class = "section-label", "Time-locking"),
       checkboxInput("timelock", info("Align trials to an event", "Sets time 0 to the event onset. gazeR::onset_pupil()"), TRUE),
       conditionalPanel("input.timelock",
@@ -923,6 +927,7 @@ server <- function(input, output, session) {
       timelock = input$timelock, timelock_event = input$timelock_event,
       window = c(input$win_start, input$win_end),
       bin_length = input$bin_length, group_cols = input$group_cols,
+      zscore = if (is.null(input$zscore)) "none" else input$zscore,
       resample = isTRUE(input$resample),
       target_rate = if (identical(input$rate_target, "set")) input$target_rate else NA
     )
@@ -1157,12 +1162,13 @@ server <- function(input, output, session) {
         plotly::add_trace(data = proc, x = ~time, y = ~pup_interp, mode = "lines",
                           name = "Interpolated + smoothed",
                           line = list(color = palette[2], width = 2.5))
-      bottom <- plotly::plot_ly(proc, x = ~time, y = ~baselinecorrectedp, type = "scatter",
-                                mode = "lines", name = "Baseline-corrected",
+      zs <- identical(result()$value_col, "pup_z") && "pup_z" %in% names(proc)
+      bottom <- plotly::plot_ly(proc, x = ~time, y = proc[[if (zs) "pup_z" else "baselinecorrectedp"]], type = "scatter",
+                                mode = "lines", name = if (zs) "Baseline-corrected, z-scored" else "Baseline-corrected",
                                 line = list(color = palette[3], width = 2))
       fig <- plotly::subplot(
         plotly::layout(top, yaxis = list(title = "Pupil size")),
-        plotly::layout(bottom, yaxis = list(title = "Corrected")),
+        plotly::layout(bottom, yaxis = list(title = if (zs) "Corrected (z)" else "Corrected")),
         nrows = 2, shareX = TRUE, heights = c(0.62, 0.38), titleY = TRUE, margin = 0.04
       )
     }
@@ -1379,7 +1385,8 @@ server <- function(input, output, session) {
 
   plot_bins <- reactive({
     req(result(), input$plot_bin)
-    bin_for_plot(result()$data, result()$timevar, input$plot_bin, input$plot_conds)
+    vc <- if (is.null(result()$value_col)) "baselinecorrectedp" else result()$value_col
+    bin_for_plot(result()$data, result()$timevar, input$plot_bin, input$plot_conds, value_col = vc)
   })
 
   error_spec <- reactive({
@@ -1744,7 +1751,7 @@ server <- function(input, output, session) {
                 "bin_length", "pupil_min", "pupil_max", "rt_min", "rt_max", "rt_sd", "pl_lag", "target_rate"),
     slider = "missingthresh",
     radio = c("interp_type", "filter", "step_first", "baseline", "baseline_method", "baseline_stat",
-              "blink_method", "rate_mode", "asc_eye", "pl_start_mode", "rate_target"),
+              "blink_method", "rate_mode", "asc_eye", "pl_start_mode", "rate_target", "zscore"),
     checkbox = c("use_blink_col", "use_mad", "timelock", "resample", "pl_aoi"),
     text = c("tobii_onset", "tobii_offset", "pl_subject", "pl_start_messages", "bids_task"),
     select = c("tracker"),

@@ -14,6 +14,11 @@
 * After a run, the Export tab selects Processed samples, the Data tab notes
   that it shows the data as loaded (and the rate of the last run), and the
   "Done" message gives the processing rate and sample count.
+* Re-scaling (step 4, after baseline correction): z-score the
+  baseline-corrected pupil per participant (across their kept trials) with
+  gazer::zscore_pupil() (needs gazer >= 0.2.12). The z-scored `pup_z` is then
+  what is binned, plotted and summarised; it is in the methods paragraph,
+  data dictionary and study files.
 
 # shinygazer 0.3.5
 

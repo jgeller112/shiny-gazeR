@@ -303,10 +303,10 @@ run_pupil_pipeline <- function(data, p, log = function(...) NULL) {
   aggvars <- unique(c(p$group_cols, "timebins"))
   log("Binning into ", p$bin_length, " ms bins by ", paste(aggvars, collapse = ", "))
   binned <- gazer::downsample_gaze(d, bin.length = p$bin_length, timevar = timevar,
-                                   aggvars = aggvars, type = "pupil", pupil = "baselinecorrectedp")
+                                   aggvars = aggvars, type = "pupil", pupil = output_column(p))
   log("Done: ", nrow(dplyr::distinct(d, subject, trial)), " trials retained")
   list(data = d, binned = binned, quality = quality, cleaned = cleaned, timevar = timevar,
-       params = p,
+       params = p, value_col = output_column(p),
        rates = dplyr::bind_rows(lapply(res, `[[`, "rates")),
        rates_original = dplyr::bind_rows(lapply(res, `[[`, "rates_original")))
 }
@@ -600,6 +600,14 @@ run_pipeline_core <- function(data, p, log = function(...) NULL, stop_if_empty =
     d$baselinecorrectedp <- d$pup_interp
   }
 
+  # 6b. Optional re-scaling: z-score the baseline-corrected pupil
+  # (gazer::zscore_pupil), per participant or per trial
+  out_col <- output_column(p)
+  if (out_col == "pup_z") {
+    log("Re-scaling: z-scoring the baseline-corrected pupil per ", if (p$zscore == "trial") "trial" else "participant")
+    d <- gazer::zscore_pupil(d, pupil_col = "baselinecorrectedp", by = p$zscore, new_col = "pup_z")
+  }
+
   # 7. Time-lock to an event
   timevar <- "time"
   if (isTRUE(p$timelock) && "message" %in% names(d)) {
@@ -623,7 +631,7 @@ run_pipeline_core <- function(data, p, log = function(...) NULL, stop_if_empty =
   log("Binning into ", p$bin_length, " ms bins by ", paste(aggvars, collapse = ", "))
   binned <- gazer::downsample_gaze(d, bin.length = p$bin_length, timevar = timevar,
                                    aggvars = aggvars, type = "pupil",
-                                   pupil = "baselinecorrectedp")
+                                   pupil = out_col)
 
   log("Done: ", n_trials(d), " trials retained")
   # Name the per-participant rate clearly; drop intermediate columns
@@ -631,7 +639,14 @@ run_pipeline_core <- function(data, p, log = function(...) NULL, stop_if_empty =
   d[intersect(c("interp", "pup", "index", "movingavgpup"), names(d))] <- NULL
   names(cleaned)[names(cleaned) == ".hz"] <- "processing_hz"
   list(data = d, binned = binned, quality = quality, cleaned = cleaned,
-       timevar = timevar, params = p, rates = rates, rates_original = rates_original)
+       timevar = timevar, params = p, rates = rates, rates_original = rates_original,
+       value_col = out_col)
+}
+
+# The analysed pupil column: z-scored (pup_z) if re-scaling is on, otherwise
+# baseline-corrected
+output_column <- function(p) {
+  if (!is.null(p$zscore) && p$zscore %in% c("subject", "trial")) "pup_z" else "baselinecorrectedp"
 }
 
 # ---- Summaries for plotting ---------------------------------------------
@@ -639,13 +654,13 @@ run_pipeline_core <- function(data, p, log = function(...) NULL, stop_if_empty =
 # Bin the processed samples and average them to one value per trial, then
 # per subject. Returns trial-level and unit-level tables, where the unit is
 # the subject (or the trial, when there is only one subject).
-bin_for_plot <- function(d, timevar, bin_length, conds = character()) {
+bin_for_plot <- function(d, timevar, bin_length, conds = character(), value_col = "baselinecorrectedp") {
   `%>%` <- dplyr::`%>%`
   conds <- intersect(conds, names(d))
   d$timebins <- round(d[[timevar]] / bin_length) * bin_length
   trial_level <- d %>%
     dplyr::group_by(dplyr::across(dplyr::all_of(unique(c("subject", "trial", conds, "timebins"))))) %>%
-    dplyr::summarise(value = mean(baselinecorrectedp, na.rm = TRUE), .groups = "drop")
+    dplyr::summarise(value = mean(.data[[value_col]], na.rm = TRUE), .groups = "drop")
   multi_subject <- dplyr::n_distinct(trial_level$subject) > 1
   unit_level <- if (multi_subject) {
     trial_level %>%
@@ -825,6 +840,7 @@ column_descriptions <- c(
   interp = "Pupil after interpolation, before smoothing (when interpolating first).",
   index = "Sample index used for cubic-spline interpolation.",
   pup_interp = "Pupil after interpolation and smoothing (and low-pass filtering, if used).",
+  pup_z = "Re-scaled pupil: baselinecorrectedp minus the participant's (or trial's) mean, divided by its SD. Present only if z-scoring was used; it is then the value that is binned and plotted.",
   baseline = "Baseline pupil size for the trial (median or mean of the baseline period, as chosen). For divisive correction with a fixed window: per participant.",
   resampled = "TRUE for samples inserted by resampling onto a uniform grid (dropped samples; treated as missing).",
   baselinecorrectedp = "Baseline-corrected pupil: pup_interp - baseline (subtractive) or (pup_interp - baseline) / baseline (divisive).",
@@ -1008,7 +1024,8 @@ methods_paragraph <- function(res, meta) {
               sprintf("The pupil trace was %s, and missing samples were then reconstructed by %s interpolation.", sm, interp)
             else sprintf("Missing samples were reconstructed by %s interpolation, and the pupil trace was then %s.", interp, sm))
 
-  # Baseline and time-locking
+  # Z-scoring, baseline and time-locking
+  z <- output_column(p) == "pup_z"
   if (p$baseline != "none") {
     refs <- c(refs, mathot = "Mathôt, S., Fabius, J., Van Heusden, E., & Van der Stigchel, S. (2018). Safe and sensible preprocessing and baseline correction of pupil-size data. *Behavior Research Methods, 50*, 94–106.")
     how <- if (p$baseline_method == "div") "dividing by" else "subtracting"
@@ -1021,7 +1038,16 @@ methods_paragraph <- function(res, meta) {
       cites <- "Mathôt et al., 2018; Mathôt & Vilotijević, 2022"
     }
     s <- c(s, sprintf("Pupil size was baseline-corrected per trial by %s the %s pupil size in %s (%s)%s.",
-                      how, stat, period, cites, if (p$baseline_method == "div") ", giving proportional change from baseline" else ""))
+                      how, stat, period, cites,
+                      if (p$baseline_method == "div") ", giving proportional change from baseline" else ""))
+  }
+  if (z) {
+    s <- c(s, sprintf("The %s pupil size was then z-scored within each %s (subtracting the %s mean and dividing by its standard deviation%s).",
+                      if (p$baseline != "none") "baseline-corrected" else "",
+                      if (p$zscore == "trial") "trial" else "participant",
+                      if (p$zscore == "trial") "trial's" else "participant's",
+                      if (p$zscore == "trial") "" else ", across all of that participant's retained trials"))
+    s[length(s)] <- sub("The  pupil", "The pupil", s[length(s)], fixed = TRUE)
   }
   if (win) {
     w <- p$window
@@ -1173,7 +1199,8 @@ qc_report_html <- function(res, raw, subject, meta) {
       ggplot2::labs(x = "Time (ms)", y = "Pupil size", colour = NULL, title = "Average across kept trials at each step") +
       ggplot2::theme_minimal(base_size = 10) + ggplot2::theme(legend.position = "bottom")
     plots <- c(plots, png_base64(p2, 9, 3.6))
-    p3 <- ggplot2::ggplot(mk(proc, "baselinecorrectedp", "baseline-corrected", tv), ggplot2::aes(bin, value)) +
+    vc <- if (!is.null(res$value_col) && res$value_col %in% names(proc)) res$value_col else "baselinecorrectedp"
+    p3 <- ggplot2::ggplot(mk(proc, vc, "baseline-corrected", tv), ggplot2::aes(bin, value)) +
       ggplot2::geom_hline(yintercept = 0, colour = "grey70") + ggplot2::geom_line(colour = "#2f9e44", linewidth = 0.9) +
       ggplot2::labs(x = "Time (ms)", y = "Change from baseline", title = "Baseline-corrected pupil (average of kept trials)") +
       ggplot2::theme_minimal(base_size = 10)
