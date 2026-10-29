@@ -1981,10 +1981,15 @@ server <- function(input, output, session) {
         if (is.null(raw_resampling())) tagList(
           tags$button(class = "btn btn-sm btn-outline-primary", disabled = NA,
                       icon("download"), "Resampled (.csv)"),
+          tags$button(class = "btn btn-sm btn-outline-primary", disabled = NA,
+                      icon("download"), "One file per participant (.zip)"),
           tags$span(class = "small text-muted",
                     "Nothing to resample yet: choose Resample all to (a rate other than the recorded one) or Fill dropped samples in step 1."))
-        else downloadButton("dl_raw_resampled", paste0(raw_resampling(), " (.csv)"),
-                            class = "btn-sm btn-outline-primary"))
+        else tagList(
+          downloadButton("dl_raw_resampled", paste0(raw_resampling(), " (.csv)"),
+                         class = "btn-sm btn-outline-primary"),
+          downloadButton("dl_raw_resampled_zip", "One file per participant (.zip)",
+                         class = "btn-sm btn-outline-primary")))
   })
   # What the step 1 rate settings would do to the loaded data, or NULL if nothing
   raw_resampling <- reactive({
@@ -1996,13 +2001,18 @@ server <- function(input, output, session) {
     if (!anyNA(hz) && length(target) && any(hz != target)) paste("Resampled to", target, "Hz")
     else if (isTRUE(p$resample)) "Uniform grid"
   })
+  raw_resampled <- function() {
+    d <- apply_sampling_rates(std(), rate_params())$data
+    d$.hz <- NULL
+    d
+  }
   output$dl_raw_resampled <- downloadHandler(
     filename = function() paste0(stamp("raw_resampled"), ".csv"),
-    content = function(file) {
-      d <- apply_sampling_rates(std(), rate_params())$data
-      d$.hz <- NULL
-      write_dataset(d, file, "raw_resampled")
-    }
+    content = function(file) write_dataset(raw_resampled(), file, "raw_resampled")
+  )
+  output$dl_raw_resampled_zip <- downloadHandler(
+    filename = function() paste0(stamp("raw_resampled"), ".zip"),
+    content = function(file) write_dataset(raw_resampled(), file, "raw_resampled", per_subject = TRUE)
   )
   output$dl_raw_csv <- downloadHandler(
     filename = function() paste0(stamp("raw_all"), ".csv"),
