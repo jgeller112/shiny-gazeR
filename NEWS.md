@@ -23,6 +23,8 @@
 * Ticking either gaze option shows **Gaze x** and **Gaze y** (step 2,
   under **Gaze position**), the gaze columns to use (guessed
   automatically, including SR Data Viewer's AVERAGE_GAZE_X/Y).
+* Blink padding (*Extend back/forward*, step 2) now defaults to 0 ms
+  instead of 100 ms.
 
 # shinygazer 0.3.7
 

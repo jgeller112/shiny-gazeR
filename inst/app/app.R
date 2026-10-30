@@ -209,8 +209,8 @@ sidebar_ui <- sidebar(
       conditionalPanel("input.blink_method != 'hershman'",
                        layout_columns(
                          col_widths = c(6, 6), gap = "0.5rem",
-                         numericInput("fillback", info("Extend back (ms)", "Pad every gap in the signal backwards by this much. gazeR::extend_blinks(). Not used with noise-based detection, which already finds each blink's onset and offset."), 100, min = 0, step = 10),
-                         numericInput("fillforward", info("Extend forward (ms)", "Pad every gap forwards by this much."), 100, min = 0, step = 10)
+                         numericInput("fillback", info("Extend back (ms)", "Pad every gap in the signal backwards by this much. gazeR::extend_blinks(). Not used with noise-based detection, which already finds each blink's onset and offset."), 0, min = 0, step = 10),
+                         numericInput("fillforward", info("Extend forward (ms)", "Pad every gap forwards by this much."), 0, min = 0, step = 10)
                        )),
       checkboxInput("use_mad", info("Remove dilation-speed outliers",
                                     "Drops samples whose change in pupil size is implausibly fast (median + k × MAD). gazeR::speed_pupil(), calc_mad()"), TRUE),
