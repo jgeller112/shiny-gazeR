@@ -298,6 +298,8 @@ run_pipeline_eyes <- function(data, p, log = function(...) NULL) {
   log("Processing the left and right eye separately, with the same settings and blink mask (blink in either eye)")
   one_eye <- function(d, side) {
     d$pupil <- d[[paste0("pupil_", side)]]
+    # Each eye's own gaze, for the gaze-position correction
+    for (v in c("x", "y")) if (paste0(v, "_", side) %in% names(d)) d[[v]] <- d[[paste0(v, "_", side)]]
     d[setdiff(names(d), c("pupil_left", "pupil_right"))]
   }
   run_both <- function(d) {
@@ -345,6 +347,7 @@ run_pipeline_eyes <- function(data, p, log = function(...) NULL) {
   }
   d <- stack("data")
   cleaned <- stack("cleaned")
+  gaze_fit <- if (isTRUE(p$gaze_correct)) stack("gaze_fit")
   timevar <- r$left$timevar
   value_col <- output_column(p)
   aggvars <- unique(c(p$group_cols, "eye", "timebins"))
@@ -353,7 +356,8 @@ run_pipeline_eyes <- function(data, p, log = function(...) NULL) {
                                    aggvars = aggvars, type = "pupil", pupil = value_col)
   log("Done: ", nrow(k), " trials retained for both eyes")
   list(data = d, binned = binned, quality = q, cleaned = cleaned, timevar = timevar, params = p,
-       value_col = value_col, rates = r$left$rates, rates_original = r$left$rates_original, eyes = TRUE)
+       value_col = value_col, rates = r$left$rates, rates_original = r$left$rates_original, eyes = TRUE,
+       gaze_fit = gaze_fit)
 }
 
 # Error listing why every trial was excluded.
@@ -399,8 +403,14 @@ run_pupil_pipeline <- function(data, p, log = function(...) NULL) {
     invisible(gc(verbose = FALSE))
   }
   # Settings from the first participant; counts are summarised below
-  skip <- "^(Starting|Excluding|Done|Blinks detected|Pupil outside|Dropped|Low-pass: |Binning|Sampling rate|Upsampling|Downsampling|Mixed|Resampled)"
+  skip <- "^(Starting|Excluding|Done|Blinks detected|Pupil outside|Dropped|Low-pass: |Binning|Sampling rate|Upsampling|Downsampling|Mixed|Resampled|Gaze position explained)"
   for (m in first_log[!grepl(skip, first_log)]) log(m)
+  gaze_fit <- dplyr::bind_rows(lapply(res, `[[`, "gaze_fit"))
+  if (nrow(gaze_fit)) {
+    log("Gaze position explained ", sprintf("%.1f%%", 100 * stats::median(gaze_fit$r_squared, na.rm = TRUE)),
+        " of pupil variance (median across participants; range ",
+        sprintf("%.1f%%-%.1f%%", 100 * min(gaze_fit$r_squared, na.rm = TRUE), 100 * max(gaze_fit$r_squared, na.rm = TRUE)), ")")
+  }
   quality <- dplyr::bind_rows(lapply(res, `[[`, "quality"))
   cleaned <- tibble::as_tibble(data.table::rbindlist(lapply(res, `[[`, "cleaned"), fill = TRUE))
   log("Blinks detected: ", sprintf("%.1f%%", 100 * mean(cleaned$blink_detected > 0, na.rm = TRUE)), " of samples")
@@ -420,7 +430,8 @@ run_pupil_pipeline <- function(data, p, log = function(...) NULL) {
   list(data = d, binned = binned, quality = quality, cleaned = cleaned, timevar = timevar,
        params = p, value_col = output_column(p),
        rates = dplyr::bind_rows(lapply(res, `[[`, "rates")),
-       rates_original = dplyr::bind_rows(lapply(res, `[[`, "rates_original")))
+       rates_original = dplyr::bind_rows(lapply(res, `[[`, "rates_original")),
+       gaze_fit = gaze_fit)
 }
 
 # Run the full pipeline on one participant (or a whole data set). Returns a list with the processed sample-level data,
@@ -512,6 +523,26 @@ run_pipeline_core <- function(data, p, log = function(...) NULL, stop_if_empty =
       dplyr::ungroup()
   }
 
+  # 3b. Optional gaze-position correction (pupil foreshortening error):
+  # fitted per participant on the cleaned samples, before interpolation
+  gaze_fit <- NULL
+  if (isTRUE(p$gaze_correct)) {
+    if (!all(c("x", "y") %in% names(d))) {
+      stop("Gaze-position correction needs gaze x and y columns: choose them under the correction in step 2, or turn the correction off.",
+           call. = FALSE)
+    }
+    ref <- gaze_reference(p)
+    log("Correcting pupil size for gaze position (", p$gaze_model, " surface per participant, reference ",
+        if (is.null(ref)) "median gaze" else sprintf("x = %g, y = %g", ref[1], ref[2]), ")")
+    d <- gazer::correct_pupil_gaze(d, pupil_col = "extendpupil", x_col = "x", y_col = "y",
+                                   by = "subject", model = p$gaze_model, reference = ref)
+    gaze_fit <- tibble::as_tibble(attr(d, "gaze_fit"))
+    attr(d, "gaze_fit") <- NULL
+    gaze_fit$subject <- as.character(gaze_fit$subject)
+    log("Gaze position explained ", sprintf("%.1f%%", 100 * stats::median(gaze_fit$r_squared, na.rm = TRUE)),
+        " of pupil variance (median across participants)")
+  }
+
   # Keep the cleaned trace for every trial so excluded trials can still be
   # inspected in the trial viewer.
   cleaned <- d[, c("subject", "trial", "time", "extendpupil", "blink_detected")]
@@ -577,7 +608,7 @@ run_pipeline_core <- function(data, p, log = function(...) NULL, stop_if_empty =
     names(cleaned)[names(cleaned) == ".hz"] <- "processing_hz"
     if (!stop_if_empty) {
       return(list(data = d[0, ], binned = NULL, quality = quality, cleaned = cleaned, timevar = NULL,
-                  params = p, rates = rates, rates_original = rates_original))
+                  params = p, rates = rates, rates_original = rates_original, gaze_fit = gaze_fit))
     }
     all_excluded_error(quality, p)
   }
@@ -712,13 +743,24 @@ run_pipeline_core <- function(data, p, log = function(...) NULL, stop_if_empty =
   names(cleaned)[names(cleaned) == ".hz"] <- "processing_hz"
   list(data = d, binned = binned, quality = quality, cleaned = cleaned,
        timevar = timevar, params = p, rates = rates, rates_original = rates_original,
-       value_col = out_col)
+       value_col = out_col, gaze_fit = gaze_fit)
 }
 
 # The analysed pupil column: z-scored (pup_z) if re-scaling is on, otherwise
 # baseline-corrected
 output_column <- function(p) {
   if (!is.null(p$zscore) && p$zscore %in% c("subject", "trial")) "pup_z" else "baselinecorrectedp"
+}
+
+# Reference gaze position for the gaze-position correction: NULL (each
+# participant's median gaze) or c(x, y)
+gaze_reference <- function(p) {
+  if (!identical(p$gaze_ref, "fixed")) return(NULL)
+  ref <- c(p$gaze_ref_x, p$gaze_ref_y)
+  if (length(ref) != 2 || !all(is.finite(ref))) {
+    stop("Enter the x and y of the reference position for the gaze-position correction (step 2).", call. = FALSE)
+  }
+  ref
 }
 
 # ---- Summaries for plotting ---------------------------------------------
@@ -907,7 +949,7 @@ column_descriptions <- c(
   upsampled = "TRUE for samples added by upsampling (values interpolated from the real samples either side), FALSE for recorded samples.",
   processing_hz = "Sampling rate (Hz) used to process this participant.",
   blink_detected = "1 if the sample was removed as a blink (tracker blinks and/or noise-based detection), before padding.",
-  extendpupil = "Pupil after removing blinks (with padding), out-of-range values and dilation-speed outliers. NA = removed or missing.",
+  extendpupil = "Pupil after removing blinks (with padding), out-of-range values and dilation-speed outliers, and after the gaze-position correction if used. NA = removed or missing.",
   pup = "Pupil with blink samples set to NA (intermediate step of smooth_interpolate_pupil()).",
   interp = "Pupil after interpolation, before smoothing (when interpolating first).",
   index = "Sample index used for cubic-spline interpolation.",
@@ -1090,6 +1132,20 @@ methods_paragraph <- function(res, meta) {
   if (isTRUE(p$use_mad)) {
     refs <- c(refs, kret = "Kret, M. E., & Sjak-Shie, E. E. (2019). Preprocessing pupil size data: Guidelines and code. *Behavior Research Methods, 51*, 1336–1342.")
     s <- c(s, sprintf("Samples with implausibly fast changes in pupil size (dilation speed more than %s median absolute deviations above the median, per trial) were also removed (Kret & Sjak-Shie, 2019).", p$mad_n))
+  }
+  if (isTRUE(p$gaze_correct)) {
+    refs <- c(refs,
+              gagl = "Gagl, B., Hawelka, S., & Hutzler, F. (2011). Systematic influence of gaze position on pupil size measurement: Analysis and correction. *Behavior Research Methods, 43*, 1171–1181.",
+              hayes = "Hayes, T. R., & Petrov, A. A. (2016). Mapping and correcting the influence of gaze position on pupil size measurements. *Behavior Research Methods, 48*, 510–527.")
+    ref <- gaze_reference(p)
+    gf <- res$gaze_fit
+    r2 <- if (!is.null(gf) && nrow(gf)) gf$r_squared[is.finite(gf$r_squared)] else numeric()
+    s <- c(s, sprintf("To correct for the effect of gaze position on measured pupil size (pupil foreshortening error; Hayes & Petrov, 2016), pupil size was regressed on gaze position for each participant (%s; Gagl et al., 2011), and the change predicted between each sample's gaze position and %s was subtracted%s.",
+                      if (p$gaze_model == "linear") "linear terms for horizontal and vertical position"
+                      else "a quadratic surface: horizontal and vertical position, their squares and their product",
+                      if (is.null(ref)) "the participant's median gaze position" else sprintf("a reference position (x = %s, y = %s)", ref[1], ref[2]),
+                      if (length(r2)) sprintf(" (gaze position explained a median of %s of the variance in pupil size, range %s–%s)",
+                                              pct(stats::median(r2)), pct(min(r2)), pct(max(r2))) else ""))
   }
 
   # Behavioural exclusions

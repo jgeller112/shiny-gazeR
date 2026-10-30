@@ -67,3 +67,6 @@ pre.shiny-text-output { max-height: 420px; overflow-y: auto; font-size: .8rem; }
 .help-content h2 { font-size: 1.3rem; margin-top: 1.5rem; }
 .help-content h3 { font-size: 1.05rem; margin-top: 1.25rem; }
 .help-content code { font-size: .85em; }
+
+.script-text { max-height: 65vh; overflow: auto; padding: .9rem 1.1rem; font-size: .8rem; line-height: 1.45;
+  background: var(--bs-tertiary-bg); border-radius: .25rem; white-space: pre; }

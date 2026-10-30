@@ -29,7 +29,7 @@ Or from GitHub:
 remotes::install_github("jgeller112/shiny-gazeR")
 ```
 
-Either way, gazeR (≥ 0.2.7) is installed too.
+Either way, gazeR (≥ 0.2.15) is installed too.
 
 ## Usage
 
@@ -45,7 +45,7 @@ Choose **Try the example data** on the home page to look around before loading y
 |---|---|---|
 | **Load** | EyeLink `.asc`, SR Data Viewer sample reports, Tobii (Titta), Pupil Labs Neon (`.zip` of the Pupil Cloud export), or any long CSV; monocular or binocular (left, right, average or both) | `read_asc()`, `merge_tobii_titta()`, `parse_pl()` |
 | **Behaviour** | Join a per-trial table (RT, accuracy, …); exclude incorrect trials, RT cutoffs, ± k SD within subject | — |
-| **Blinks & artifacts** | Plausible pupil range; tracker or noise-based blinks (Hershman et al., 2018); blink padding; dilation-speed outliers | `detect_blinks_noise()`, `extend_blinks()`, `speed_pupil()`, `calc_mad()` |
+| **Blinks & artifacts** | Plausible pupil range; tracker or noise-based blinks (Hershman et al., 2018); blink padding; dilation-speed outliers; gaze-position (foreshortening) correction | `detect_blinks_noise()`, `extend_blinks()`, `speed_pupil()`, `calc_mad()`, `correct_pupil_gaze()` |
 | **Missing data** | Exclude trials and subjects above a threshold, measured inside the analysis window | — |
 | **Interpolate & smooth** | Linear or cubic; moving average or Hanning; either order; optional zero-phase Butterworth low-pass | `smooth_interpolate_pupil()`, `lowpass_filter()` |
 | **Baseline & time-lock** | Subtractive or divisive; from an event or a fixed window; align trials to any message | `baseline_correction_pupil_msg()`, `baseline_correction_pupil()`, `onset_pupil()` |
@@ -60,6 +60,7 @@ Choose **Try the example data** on the home page to look around before loading y
   - rainclouds of the mean pupil in a window;
   - pupil vs behaviour scatter plots, with optional RT markers.
 - **Export:** raw combined, processed or binned data, for all participants or one, as a single CSV or one CSV per participant (`.zip`); plus trial quality, plotted values, and a JSON file with every parameter and package version.
+- **R script:** the run as a standalone R script of gazeR calls, to copy or download, which gives the same results as the app.
 
 ## Reading `.asc` files
 

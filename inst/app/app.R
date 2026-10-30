@@ -42,7 +42,9 @@ col_candidates <- list(
   time    = c("time", "sr_trial_time", "timestamp", "TIMESTAMP"),
   pupil   = c("pupil", "AVERAGE_PUPIL_SIZE", "RIGHT_PUPIL_SIZE", "LEFT_PUPIL_SIZE"),
   blink   = c("blink", "AVERAGE_IN_BLINK", "RIGHT_IN_BLINK", "LEFT_IN_BLINK"),
-  message = c("message", "SAMPLE_MESSAGE", "msg", "event")
+  message = c("message", "SAMPLE_MESSAGE", "msg", "event"),
+  x       = c("x", "AVERAGE_GAZE_X", "RIGHT_GAZE_X", "LEFT_GAZE_X", "gaze_x"),
+  y       = c("y", "AVERAGE_GAZE_Y", "RIGHT_GAZE_Y", "LEFT_GAZE_Y", "gaze_y")
 )
 
 # Input label with a hover tooltip explaining the setting.
@@ -214,6 +216,27 @@ sidebar_ui <- sidebar(
                                     "Drops samples whose change in pupil size is implausibly fast (median + k × MAD). gazeR::speed_pupil(), calc_mad()"), TRUE),
       conditionalPanel("input.use_mad",
                        numericInput("mad_n", "MAD multiplier (k)", 16, min = 1)),
+      checkboxInput("gaze_correct", info("Correct pupil size for gaze position",
+                                         "Removes the pupil foreshortening error: the tracker sees the pupil at an angle when the eye looks away from the camera, so measured size changes with gaze position. Per participant, pupil size is regressed on gaze x and y, and the change predicted between each sample's gaze position and the reference is subtracted (Gagl et al., 2011; Hayes & Petrov, 2016). Runs after blink and artifact removal, before interpolation. gazeR::correct_pupil_gaze()"),
+                    FALSE),
+      conditionalPanel("input.gaze_correct",
+                       layout_columns(
+                         col_widths = c(6, 6), gap = "0.5rem",
+                         selectInput("col_x", info("Gaze x", "Horizontal gaze position column (x for EyeLink, Tobii, Pupil Labs and BIDS files)."), NULL),
+                         selectInput("col_y", info("Gaze y", "Vertical gaze position column."), NULL)
+                       ),
+                       radioButtons("gaze_model", info("Model", "Quadratic: x, y, x², y² and x·y, for the curved pattern trackers usually show. Linear: x and y only."),
+                                    c(Quadratic = "quadratic", Linear = "linear"), inline = TRUE),
+                       radioButtons("gaze_ref", info("Reference position", "Pupil size is left unchanged where gaze is at this position. Median gaze: each participant's median gaze position, usually the fixation point. Fixed point: e.g. the screen centre, in the same units as gaze (pixels; Tobii 0-1)."),
+                                    c("Median gaze" = "median", "Fixed point" = "fixed"), inline = TRUE),
+                       conditionalPanel("input.gaze_ref == 'fixed'",
+                                        layout_columns(
+                                          col_widths = c(6, 6), gap = "0.5rem",
+                                          numericInput("gaze_ref_x", "x", 960),
+                                          numericInput("gaze_ref_y", "y", 540)
+                                        )),
+                       p(class = "small text-muted",
+                         "Fitting on task data assumes gaze position is unrelated to your effect. If conditions differ in where people look, the correction can remove part of the effect.")),
       sliderInput("missingthresh", info("Exclusion threshold",
                                         "Excludes any trial with MORE than this percentage of samples missing, and any participant with more than this percentage missing across all their trials (pooled). Missing means tracker loss, blinks and out-of-range samples, before blink padding and speed-outlier removal; measured inside the analysis window when trials are time-locked."),
                   min = 0, max = 100, value = 20, step = 5, post = "%")
@@ -416,6 +439,10 @@ ui <- page_sidebar(
         card_header(tagList(icon("file-pen"), "Methods paragraph for your paper")),
         uiOutput("methods_ui")
       ),
+      card(
+        card_header(tagList(icon("code"), "R script")),
+        uiOutput("script_ui")
+      ),
       layout_columns(
         col_widths = c(4, 4, 4),
         card(
@@ -470,6 +497,8 @@ server <- function(input, output, session) {
   result <- reactiveVal(NULL)    # output of run_pupil_pipeline()
   log_lines <- reactiveVal(character())
   pending_groups <- reactiveVal(NULL)  # preselected grouping for the example data
+  loaded_example <- reactiveVal(FALSE) # the example data, not uploads (for the R script)
+  run_meta <- reactiveVal(NULL)        # script_meta() at the last run
 
   add_log <- function(...) {
     log_lines(c(log_lines(), paste0(format(Sys.time(), "%H:%M:%S"), "  ", ...)))
@@ -481,7 +510,7 @@ server <- function(input, output, session) {
     result(NULL)
     cols <- names(d)
     for (nm in names(col_candidates)) {
-      optional <- nm %in% c("blink", "message")
+      optional <- nm %in% c("blink", "message", "x", "y")
       choices <- if (optional) c("(none)" = "", cols) else cols
       updateSelectInput(session, paste0("col_", nm), choices = choices,
                         selected = guess_col(cols, col_candidates[[nm]]))
@@ -584,12 +613,14 @@ server <- function(input, output, session) {
         showNotification("No blink events in the BIDS data, so noise-based blink detection is turned on.", type = "message")
       }
     }
+    loaded_example(FALSE)
     set_raw(d, paste(nrow(input$files), "file(s)"))
   })
   bids_info <- reactiveVal(NULL)
 
   load_example <- function() {
     pending_groups(c("subject", "script"))
+    loaded_example(TRUE)
     set_raw(read_gazer_files(example_path), "example data")
   }
   observeEvent(input$load_example, load_example())
@@ -629,15 +660,20 @@ server <- function(input, output, session) {
       all(c("pupil_left", "pupil_right") %in% names(raw()))
   })
 
-  std <- reactive({
+  # Column mapping passed to standardise_columns() (also written into the R script)
+  col_map <- reactive({
     req(raw(), input$col_subject, input$col_trial, input$col_time, input$col_pupil)
     eyes <- eyes_mode()
+    list(subject = input$col_subject, trial = input$col_trial, time = input$col_time,
+         pupil = if (eyes && "pupil" %in% names(raw())) "pupil" else input$col_pupil,
+         blink = if (eyes && "blink" %in% names(raw())) "blink" else input$col_blink,
+         message = input$col_message, x = input$col_x, y = input$col_y)
+  })
+
+  std <- reactive({
+    cols <- col_map()
     d <- tryCatch(
-      standardise_columns(raw(), list(subject = input$col_subject, trial = input$col_trial,
-                                      time = input$col_time,
-                                      pupil = if (eyes && "pupil" %in% names(raw())) "pupil" else input$col_pupil,
-                                      blink = if (eyes && "blink" %in% names(raw())) "blink" else input$col_blink,
-                                      message = input$col_message)),
+      standardise_columns(raw(), cols),
       error = function(e) {
         showNotification(conditionMessage(e), type = "error")
         NULL
@@ -967,6 +1003,8 @@ server <- function(input, output, session) {
       fillback = if (identical(input$blink_method, "hershman")) 0 else input$fillback,
       fillforward = if (identical(input$blink_method, "hershman")) 0 else input$fillforward,
       use_mad = input$use_mad, mad_n = input$mad_n,
+      gaze_correct = isTRUE(input$gaze_correct), gaze_model = input$gaze_model, gaze_ref = input$gaze_ref,
+      gaze_ref_x = input$gaze_ref_x, gaze_ref_y = input$gaze_ref_y,
       missingthresh = input$missingthresh / 100,  # slider is in %, pipeline uses a proportion
       interp_type = input$interp_type, filter = input$filter, step_first = input$step_first,
       maxgap = if (is.na(input$maxgap)) Inf else input$maxgap, ma_n = input$ma_n,
@@ -1004,6 +1042,7 @@ server <- function(input, output, session) {
       res$quality <- dplyr::left_join(res$quality, agree, by = c("subject", "trial"))
     }
     result(res)
+    run_meta(script_meta())
     updateSelectInput(session, "dl_dataset", selected = "processed")
     q <- res$quality
     resampled <- !identical(res$rates$hz, res$rates_original$hz)
@@ -1344,10 +1383,37 @@ server <- function(input, output, session) {
       ),
       card(card_header(tagList(icon("users"), "By subject")),
            DT::DTOutput("subject_quality_table")),
+      if (!is.null(result()$gaze_fit) && nrow(result()$gaze_fit))
+        card(card_header(tagList(icon("crosshairs"), "Gaze-position correction"),
+                         tags$small(class = "text-muted ms-2", "per participant")),
+             p(class = "small text-muted mb-2",
+               "R² is the share of pupil-size variance explained by gaze position (samples used for the fit; extreme 1% of gaze trimmed at each end). ",
+               "Max correction is the largest change made to a sample, in pupil units. A high R² means gaze position had a large effect on measured pupil size."),
+             DT::DTOutput("gaze_fit_table")),
       card(card_header(tagList(icon("eye"), "Missing data and blinks by eye (as loaded)")),
            DT::DTOutput("eye_table_quality"))
     )
   })
+
+  output$gaze_fit_table <- DT::renderDT({
+    g <- result()$gaze_fit
+    req(g, nrow(g))
+    stats <- c("n", "r_squared", "ref_x", "ref_y", "max_correction")
+    g <- g[c(setdiff(names(g), stats), stats)]
+    DT::datatable(g, rownames = FALSE,
+                  colnames = c(setdiff(names(g), stats), "Samples", "R²", "Reference x", "Reference y", "Max correction"),
+                  options = list(pageLength = 10, dom = "tip", scrollX = TRUE)) |>
+      DT::formatRound(c("r_squared"), 3) |>
+      DT::formatRound(c("ref_x", "ref_y", "max_correction"), 1)
+  })
+
+  observeEvent(input$gaze_correct, {
+    d <- std()
+    if (isTRUE(input$gaze_correct) && !is.null(d) && !all(c("x", "y") %in% names(d))) {
+      showNotification("Gaze-position correction needs gaze x and y: choose the columns under the correction in step 2.",
+                       type = "warning", duration = 8)
+    }
+  }, ignoreInit = TRUE)
 
   output$missing_hist <- plotly::renderPlotly({
     req(result())
@@ -2072,16 +2138,18 @@ server <- function(input, output, session) {
   study_inputs <- list(
     numeric = c("hz", "fillback", "fillforward", "mad_n", "hershman_smooth", "hershman_gap", "maxgap", "ma_n",
                 "lp_cutoff", "lp_order", "baseline_dur", "bw_start", "bw_end", "win_start", "win_end",
-                "bin_length", "pupil_min", "pupil_max", "rt_min", "rt_max", "rt_sd", "pl_lag", "target_rate"),
+                "bin_length", "pupil_min", "pupil_max", "rt_min", "rt_max", "rt_sd", "pl_lag", "target_rate",
+                "gaze_ref_x", "gaze_ref_y"),
     slider = "missingthresh",
     radio = c("interp_type", "filter", "step_first", "baseline", "baseline_method", "baseline_stat",
-              "blink_method", "rate_mode", "asc_eye", "pl_start_mode", "rate_target", "zscore"),
-    checkbox = c("use_blink_col", "use_mad", "timelock", "resample", "pl_aoi", "shared_missing"),
+              "blink_method", "rate_mode", "asc_eye", "pl_start_mode", "rate_target", "zscore",
+              "gaze_model", "gaze_ref"),
+    checkbox = c("use_blink_col", "use_mad", "timelock", "resample", "pl_aoi", "shared_missing", "gaze_correct"),
     text = c("tobii_onset", "tobii_offset", "pl_subject", "pl_start_messages", "bids_task"),
     select = c("tracker"),
     # These depend on the loaded data, so they are applied once data are loaded
     data_select = c("col_subject", "col_trial", "col_time", "col_pupil", "col_blink", "col_message",
-                    "acc_col", "rt_col"),
+                    "col_x", "col_y", "acc_col", "rt_col"),
     data_multi = c("baseline_event", "timelock_event", "group_cols", "acc_correct")
   )
 
@@ -2209,6 +2277,67 @@ server <- function(input, output, session) {
     }
   )
 
+  # ---- R script ----------------------------------------------------------
+  # What the script needs besides the parameters, captured at each run
+  script_meta <- function() {
+    example <- isTRUE(loaded_example())
+    list(example = example,
+         tracker = if (example) "auto" else input$tracker,
+         files = if (!is.null(input$files)) input$files$name else character(),
+         msg_files = if (!is.null(input$msg_files)) input$msg_files$name else character(),
+         asc_eye = input$asc_eye, tobii_onset = input$tobii_onset, tobii_offset = input$tobii_offset,
+         pl_subject = input$pl_subject, pl_start_mode = input$pl_start_mode,
+         pl_start_messages = input$pl_start_messages, pl_lag = input$pl_lag, pl_aoi = input$pl_aoi,
+         prolab_trial_start = input$prolab_trial_start, bids_trial_start = input$bids_trial_start,
+         cols = col_map(),
+         behav_file = if (!is.null(input$behav_file) && length(input$behav_keys)) input$behav_file$name,
+         behav_keys = input$behav_keys,
+         eyes = eyes_mode(), has_message = "message" %in% names(std()),
+         app_version = app_version, gazer_version = gazer_version)
+  }
+
+  script_text <- reactive({
+    req(result(), run_meta())
+    pipeline_script(result()$params, run_meta())
+  })
+
+  output$script_ui <- renderUI({
+    if (is.null(result())) {
+      return(p(class = "text-muted small mb-0",
+               "Run the pipeline to get an R script that re-runs it with gazeR: every step as code, with the settings you used."))
+    }
+    tagList(
+      p(class = "small text-muted",
+        "A standalone R script that re-runs this pre-processing with gazeR and gives the same processed samples, binned data and exclusions. ",
+        "Set ", tags$code("data_dir"), " to the folder with your files. Helpers for reading files and sampling rates are included from shiny gazeR."),
+      div(class = "d-flex gap-2",
+          actionButton("show_script", "View R script", icon = icon("code"), class = "btn-sm btn-primary"),
+          downloadButton("dl_script", "Download (.R)", class = "btn-sm btn-outline-primary"))
+    )
+  })
+
+  observeEvent(input$show_script, {
+    showModal(modalDialog(
+      title = tagList(icon("code"), " R script for this run"),
+      size = "xl", easyClose = TRUE,
+      p(class = "small text-muted", "Generated from the last run's settings. Copy it into an R script, or download it."),
+      tags$pre(id = "script_text", class = "script-text", script_text()),
+      footer = tagList(
+        tags$button(class = "btn btn-primary", type = "button",
+                    onclick = "navigator.clipboard.writeText(document.getElementById('script_text').innerText); this.innerText = 'Copied';",
+                    icon("copy"), " Copy script"),
+        downloadButton("dl_script_modal", "Download (.R)", class = "btn-outline-primary"),
+        modalButton("Close"))
+    ))
+  })
+
+  script_download <- downloadHandler(
+    filename = function() paste0(stamp("pupil_preprocessing"), ".R"),
+    content = function(file) writeLines(script_text(), file)
+  )
+  output$dl_script <- script_download
+  output$dl_script_modal <- script_download
+
   output$dl_samples <- csv_download("samples")
   output$dl_binned <- csv_download("binned")
   output$dl_quality <- csv_download("quality")
@@ -2226,7 +2355,8 @@ server <- function(input, output, session) {
         created = format(Sys.time(), "%Y-%m-%dT%H:%M:%S%z"),
         columns = list(subject = input$col_subject, trial = input$col_trial,
                        time = input$col_time, pupil = input$col_pupil,
-                       blink = input$col_blink, message = input$col_message),
+                       blink = input$col_blink, message = input$col_message,
+                       x = input$col_x, y = input$col_y),
         parameters = p
       )
       jsonlite::write_json(out, file, auto_unbox = TRUE, pretty = TRUE, null = "null")

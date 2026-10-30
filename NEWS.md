@@ -1,3 +1,24 @@
+# shinygazer 0.3.8
+
+* Export tab: **R script**. After a run, *View R script* opens the run as a
+  standalone R script (copy it, or download it as `.R`): every
+  pre-processing step written out as gazeR calls, with the settings used and
+  only the steps turned on, plus the helpers it needs from the app (file
+  readers, sampling rates, behavioural exclusions) copied from the app's own
+  code. It gives the same processed samples, binned data and trial
+  exclusions as the app, and saves them as CSVs.
+* Step 2: **Correct pupil size for gaze position** (pupil foreshortening
+  error; Hayes & Petrov, 2016), with gazer::correct_pupil_gaze() (needs
+  gazer >= 0.2.15). Per participant, pupil size is regressed on gaze x and y
+  (quadratic or linear) and the change predicted relative to a reference
+  position (median gaze, or a fixed point such as the screen centre) is
+  subtracted, after blink and artifact removal and before interpolation.
+  With Eye = Both each eye uses its own gaze. The Quality tab shows each
+  participant's fit (samples, R², largest correction); the methods
+  paragraph, study file and R script include it.
+  Ticking it shows **Gaze x** and **Gaze y**, the gaze columns to use
+  (guessed automatically, including SR Data Viewer's AVERAGE_GAZE_X/Y).
+
 # shinygazer 0.3.7
 
 * The missing-data exclusion threshold now counts samples missing from the
