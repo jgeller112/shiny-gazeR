@@ -183,14 +183,26 @@ pipeline_script <- function(p, meta) {
     b("  mutate(extendpupil = remove_speed_outliers(extendpupil, time, n = ", lit(p$mad_n), ")) %>%")
     b("  ungroup()")
   }
-  if (isTRUE(p$gaze_correct)) {
+  fix <- isTRUE(p$fix_exclude)
+  if (fix) {
+    fns <- c(fns, "off_fixation")
     b("")
-    b("# Gaze-position correction (pupil foreshortening error), per participant")
-    b("d <- gazer::correct_pupil_gaze(d, pupil_col = \"extendpupil\", x_col = \"x\", y_col = \"y\",")
-    b("                               by = \"subject\", model = ", lit(p$gaze_model),
-      ", reference = ", lit(gaze_reference(p)), ")")
-    b("gaze_fit <- attr(d, \"gaze_fit\")  # samples used, R-squared and reference per participant")
-    b("attr(d, \"gaze_fit\") <- NULL")
+    b("# Gaze away from fixation: these samples are removed (trials with too many")
+    b("# are excluded below)")
+    if (identical(p$fix_units, "deg")) {
+      b("# Max distance: ", p$fix_radius, " degrees = ", p$fix_radius, " x pixels per degree at the screen centre")
+      b("px_per_degree <- ", lit(p$screen_px), " / ", lit(p$screen_cm), " * ", lit(p$view_cm),
+        " * tan(pi / 180)  # screen px / screen cm * viewing distance (cm) * tan(1 degree)")
+      radius_code <- paste0(lit(p$fix_radius), " * px_per_degree")
+    } else {
+      radius_code <- lit(fixation_radius(p))
+    }
+    b("off_fix <- d %>%")
+    b("  group_by(subject) %>%")
+    b("  mutate(.off = off_fixation(x, y, ", radius_code, ", ", lit(fixation_reference(p)), ")) %>%")
+    b("  pull(.off)")
+    b("off_fix <- off_fix & !is.na(d$extendpupil)")
+    b("d$extendpupil[off_fix] <- NA")
   }
   b("")
 
@@ -213,9 +225,10 @@ pipeline_script <- function(p, meta) {
     b("has_ev <- rep(TRUE, nrow(d))")
   }
   b("quality <- d %>%")
-  b("  mutate(.in = in_window, .ev = has_ev, .miss = missing_raw) %>%")
+  b("  mutate(.in = in_window, .ev = has_ev, .miss = missing_raw", if (fix) ", .off = off_fix" else "", ") %>%")
   b("  group_by(subject, trial) %>%")
   b("  summarise(samples = sum(.in), missing_n = sum(.miss[.in]), prop_missing = missing_n / samples,")
+  if (fix) b("            prop_off_fixation = sum(.off[.in]) / samples,")
   b("            valid_total = sum(!is.na(extendpupil)), has_event = any(.ev), .groups = \"drop\") %>%")
   b("  group_by(subject) %>%")
   b("  # Participant level: missing samples pooled across their analysable trials")
@@ -226,6 +239,7 @@ pipeline_script <- function(p, meta) {
   b("    subject_prop_missing > ", lit(p$missingthresh), " ~ \"subject missing data\",")
   b("    valid_total < 2 ~ \"no valid samples\",")
   b("    prop_missing > ", lit(p$missingthresh), " ~ \"trial missing data\",")
+  if (fix) b("    prop_off_fixation > ", lit(p$fix_thresh), " ~ \"gaze off fixation\",")
   b("    TRUE ~ \"kept\"),")
   b("    excluded = reason != \"kept\") %>%")
   b("  select(-valid_total, -has_event, -missing_n)")
@@ -315,6 +329,7 @@ pipeline_script <- function(p, meta) {
   b("d[intersect(c(\"interp\", \"pup\", \"index\", \"movingavgpup\"), names(d))] <- NULL")
 
   # ---- Assemble ----
+  if (isTRUE(p$bin_gaze)) fns <- c(fns, "add_binned_gaze")
   out <- c(out, "# ---- Helpers from shiny gazeR (pipeline.R) ----------------------------", "")
   out <- c(out, paste0(script_helpers(unique(fns)), "\n"))
   out <- c(out, load)
@@ -362,6 +377,10 @@ pipeline_script <- function(p, meta) {
   add("# ---- 5. Bin ----------------------------------------------------------------")
   add("binned <- gazer::downsample_gaze(processed, bin.length = ", lit(p$bin_length), ", timevar = ", lit(timevar), ",")
   add("                                 aggvars = ", lit(aggvars), ", type = \"pupil\", pupil = ", lit(out_col), ")")
+  if (isTRUE(p$bin_gaze)) {
+    add("# Mean gaze x/y per bin, for gaze as a covariate")
+    add("binned <- add_binned_gaze(binned, processed, ", lit(p$bin_length), ", ", lit(timevar), ", ", lit(aggvars), ")")
+  }
   add("")
   add("# ---- Save -----------------------------------------------------------------")
   add("data.table::fwrite(processed, \"processed_samples.csv\", na = \"NA\")")

@@ -216,27 +216,38 @@ sidebar_ui <- sidebar(
                                     "Drops samples whose change in pupil size is implausibly fast (median + k × MAD). gazeR::speed_pupil(), calc_mad()"), TRUE),
       conditionalPanel("input.use_mad",
                        numericInput("mad_n", "MAD multiplier (k)", 16, min = 1)),
-      checkboxInput("gaze_correct", info("Correct pupil size for gaze position",
-                                         "Removes the pupil foreshortening error: the tracker sees the pupil at an angle when the eye looks away from the camera, so measured size changes with gaze position. Per participant, pupil size is regressed on gaze x and y, and the change predicted between each sample's gaze position and the reference is subtracted (Gagl et al., 2011; Hayes & Petrov, 2016). Runs after blink and artifact removal, before interpolation. gazeR::correct_pupil_gaze()"),
+      tags$div(class = "section-label", "Gaze position"),
+      checkboxInput("fix_exclude", info("Exclude gaze away from fixation",
+                                        "For fixation designs. Samples whose gaze is further than the maximum distance from the fixation point are removed (and interpolated if the trial is kept), and trials with more than the set percentage of samples off fixation are excluded (inside the analysis window when time-locked). Samples with no gaze don't count."),
                     FALSE),
-      conditionalPanel("input.gaze_correct",
+      conditionalPanel("input.fix_exclude",
+                       radioButtons("fix_ref", info("Fixation point", "Median gaze: each participant's median gaze position. Fixed point: e.g. the fixation cross, in the same units as gaze."),
+                                    c("Median gaze" = "median", "Fixed point" = "fixed"), inline = TRUE),
+                       conditionalPanel("input.fix_ref == 'fixed'",
+                                        layout_columns(
+                                          col_widths = c(6, 6), gap = "0.5rem",
+                                          numericInput("fix_x", "x", 960),
+                                          numericInput("fix_y", "y", 540)
+                                        )),
+                       radioButtons("fix_units", info("Distance in", "Pixels: the units of your gaze columns (Tobii: 0-1). Degrees of visual angle: converted to pixels from the screen width and viewing distance."),
+                                    c(Pixels = "px", Degrees = "deg"), inline = TRUE),
+                       conditionalPanel("input.fix_units == 'deg'",
+                                        layout_columns(
+                                          col_widths = c(4, 4, 4), gap = "0.5rem",
+                                          numericInput("screen_px", info("Screen px", "Screen width in pixels (the resolution). Read from DISPLAY_COORDS in EyeLink .asc files."), 1920, min = 1),
+                                          numericInput("screen_cm", info("Screen cm", "Width of the visible screen area in cm."), NA, min = 0),
+                                          numericInput("view_cm", info("Distance cm", "Viewing distance from the eyes to the screen, in cm."), NA, min = 0)
+                                        )),
+                       numericInput("fix_radius", info("Max distance", "From the fixation point, in pixels or degrees as chosen above (e.g. 100 px, or 2°)."), 100, min = 0),
+                       uiOutput("fix_radius_note"),
+                       sliderInput("fix_thresh", info("Exclude trials with more than", "Percentage of the trial's samples off fixation."),
+                                   min = 0, max = 100, value = 20, step = 5, post = "% off fixation")),
+      conditionalPanel("input.fix_exclude || input.bin_gaze",
                        layout_columns(
                          col_widths = c(6, 6), gap = "0.5rem",
                          selectInput("col_x", info("Gaze x", "Horizontal gaze position column (x for EyeLink, Tobii, Pupil Labs and BIDS files)."), NULL),
                          selectInput("col_y", info("Gaze y", "Vertical gaze position column."), NULL)
-                       ),
-                       radioButtons("gaze_model", info("Model", "Quadratic: x, y, x², y² and x·y, for the curved pattern trackers usually show. Linear: x and y only."),
-                                    c(Quadratic = "quadratic", Linear = "linear"), inline = TRUE),
-                       radioButtons("gaze_ref", info("Reference position", "Pupil size is left unchanged where gaze is at this position. Median gaze: each participant's median gaze position, usually the fixation point. Fixed point: e.g. the screen centre, in the same units as gaze (pixels; Tobii 0-1)."),
-                                    c("Median gaze" = "median", "Fixed point" = "fixed"), inline = TRUE),
-                       conditionalPanel("input.gaze_ref == 'fixed'",
-                                        layout_columns(
-                                          col_widths = c(6, 6), gap = "0.5rem",
-                                          numericInput("gaze_ref_x", "x", 960),
-                                          numericInput("gaze_ref_y", "y", 540)
-                                        )),
-                       p(class = "small text-muted",
-                         "Fitting on task data assumes gaze position is unrelated to your effect. If conditions differ in where people look, the correction can remove part of the effect.")),
+                       )),
       sliderInput("missingthresh", info("Exclusion threshold",
                                         "Excludes any trial with MORE than this percentage of samples missing, and any participant with more than this percentage missing across all their trials (pooled). Missing means tracker loss, blinks and out-of-range samples, before blink padding and speed-outlier removal; measured inside the analysis window when trials are time-locked."),
                   min = 0, max = 100, value = 20, step = 5, post = "%")
@@ -311,6 +322,9 @@ sidebar_ui <- sidebar(
       selectizeInput("group_cols", info("Group by", "Bins are averaged within every combination of these columns. Pick subject and/or trial plus any condition columns (for .asc files, Experiment Builder trial variables appear here). Leave empty to average everything."),
                      c("subject", "trial"), selected = "subject", multiple = TRUE,
                      options = list(placeholder = "Everything pooled", plugins = list("remove_button"))),
+      checkboxInput("bin_gaze", info("Add mean gaze x/y per bin",
+                                     "Adds gaze_x and gaze_y, the mean gaze position in each bin (over samples with a valid pupil), so gaze can be a covariate in your statistical model. Uses the gaze columns from step 2."),
+                    FALSE),
       p(class = "text-muted small",
         "This sets the binned data you download. Plots on the Results tab choose their own conditions and error bars.")
     ),
@@ -614,6 +628,8 @@ server <- function(input, output, session) {
       }
     }
     loaded_example(FALSE)
+    # Screen width for degrees of visual angle, from EyeLink DISPLAY_COORDS
+    if (length(attr(d, "display_px"))) updateNumericInput(session, "screen_px", value = max(attr(d, "display_px")))
     set_raw(d, paste(nrow(input$files), "file(s)"))
   })
   bids_info <- reactiveVal(NULL)
@@ -1003,8 +1019,10 @@ server <- function(input, output, session) {
       fillback = if (identical(input$blink_method, "hershman")) 0 else input$fillback,
       fillforward = if (identical(input$blink_method, "hershman")) 0 else input$fillforward,
       use_mad = input$use_mad, mad_n = input$mad_n,
-      gaze_correct = isTRUE(input$gaze_correct), gaze_model = input$gaze_model, gaze_ref = input$gaze_ref,
-      gaze_ref_x = input$gaze_ref_x, gaze_ref_y = input$gaze_ref_y,
+      fix_exclude = isTRUE(input$fix_exclude), fix_ref = input$fix_ref, fix_x = input$fix_x, fix_y = input$fix_y,
+      fix_radius = input$fix_radius, fix_thresh = input$fix_thresh / 100,  # slider in %
+      fix_units = input$fix_units, screen_px = input$screen_px, screen_cm = input$screen_cm, view_cm = input$view_cm,
+      bin_gaze = isTRUE(input$bin_gaze),
       missingthresh = input$missingthresh / 100,  # slider is in %, pipeline uses a proportion
       interp_type = input$interp_type, filter = input$filter, step_first = input$step_first,
       maxgap = if (is.na(input$maxgap)) Inf else input$maxgap, ma_n = input$ma_n,
@@ -1383,34 +1401,27 @@ server <- function(input, output, session) {
       ),
       card(card_header(tagList(icon("users"), "By subject")),
            DT::DTOutput("subject_quality_table")),
-      if (!is.null(result()$gaze_fit) && nrow(result()$gaze_fit))
-        card(card_header(tagList(icon("crosshairs"), "Gaze-position correction"),
-                         tags$small(class = "text-muted ms-2", "per participant")),
-             p(class = "small text-muted mb-2",
-               "R² is the share of pupil-size variance explained by gaze position (samples used for the fit; extreme 1% of gaze trimmed at each end). ",
-               "Max correction is the largest change made to a sample, in pupil units. A high R² means gaze position had a large effect on measured pupil size."),
-             DT::DTOutput("gaze_fit_table")),
       card(card_header(tagList(icon("eye"), "Missing data and blinks by eye (as loaded)")),
            DT::DTOutput("eye_table_quality"))
     )
   })
 
-  output$gaze_fit_table <- DT::renderDT({
-    g <- result()$gaze_fit
-    req(g, nrow(g))
-    stats <- c("n", "r_squared", "ref_x", "ref_y", "max_correction")
-    g <- g[c(setdiff(names(g), stats), stats)]
-    DT::datatable(g, rownames = FALSE,
-                  colnames = c(setdiff(names(g), stats), "Samples", "R²", "Reference x", "Reference y", "Max correction"),
-                  options = list(pageLength = 10, dom = "tip", scrollX = TRUE)) |>
-      DT::formatRound(c("r_squared"), 3) |>
-      DT::formatRound(c("ref_x", "ref_y", "max_correction"), 1)
+  # The max distance in pixels, when it's entered in degrees
+  output$fix_radius_note <- renderUI({
+    req(identical(input$fix_units, "deg"))
+    px <- tryCatch(fixation_radius(list(fix_radius = input$fix_radius, fix_units = "deg", screen_px = input$screen_px,
+                                        screen_cm = input$screen_cm, view_cm = input$view_cm)),
+                   error = function(e) NULL)
+    p(class = "small text-muted mt-n2",
+      if (is.null(px)) "Enter the screen width (px and cm) and viewing distance."
+      else sprintf("%g° = %.0f px (%.1f px per degree at the screen centre).", input$fix_radius, px, px / input$fix_radius))
   })
 
-  observeEvent(input$gaze_correct, {
+  observeEvent(list(input$fix_exclude, input$bin_gaze), {
     d <- std()
-    if (isTRUE(input$gaze_correct) && !is.null(d) && !all(c("x", "y") %in% names(d))) {
-      showNotification("Gaze-position correction needs gaze x and y: choose the columns under the correction in step 2.",
+    if (any(isTRUE(input$fix_exclude), isTRUE(input$bin_gaze)) &&
+        !is.null(d) && !all(c("x", "y") %in% names(d))) {
+      showNotification("Gaze options need gaze x and y: choose the columns under Gaze position in step 2.",
                        type = "warning", duration = 8)
     }
   }, ignoreInit = TRUE)
@@ -1462,13 +1473,15 @@ server <- function(input, output, session) {
     labels <- c(subject = "Subject", trial = "Trial", samples = "Samples", prop_missing = "Missing",
                 prop_missing_left = "Missing (left)", prop_missing_right = "Missing (right)",
                 subject_prop_missing = "Subject missing", reason = "Reason", excluded = "Excluded",
-                pupil_icc = "L–R pupil ICC", pupil_r = "L–R pupil r")
+                pupil_icc = "L–R pupil ICC", pupil_r = "L–R pupil r", prop_off_fixation = "Off fixation",
+                prop_off_fixation_left = "Off fixation (left)", prop_off_fixation_right = "Off fixation (right)")
     agree <- intersect(c("pupil_icc", "pupil_r"), names(q))
     tbl <- DT::datatable(q, rownames = FALSE, filter = "top",
                   colnames = ifelse(names(q) %in% names(labels), labels[names(q)], names(q)),
                   options = list(pageLength = 8, scrollX = TRUE, dom = "tip")) |>
       DT::formatPercentage(intersect(c("prop_missing", "prop_missing_left", "prop_missing_right",
-                                       "subject_prop_missing"), names(q)), 1) |>
+                                       "subject_prop_missing", "prop_off_fixation", "prop_off_fixation_left",
+                                       "prop_off_fixation_right"), names(q)), 1) |>
       DT::formatStyle("excluded", target = "row",
                       backgroundColor = DT::styleEqual(TRUE, "rgba(240,140,0,.12)"))
     if (length(agree)) {
@@ -2139,12 +2152,12 @@ server <- function(input, output, session) {
     numeric = c("hz", "fillback", "fillforward", "mad_n", "hershman_smooth", "hershman_gap", "maxgap", "ma_n",
                 "lp_cutoff", "lp_order", "baseline_dur", "bw_start", "bw_end", "win_start", "win_end",
                 "bin_length", "pupil_min", "pupil_max", "rt_min", "rt_max", "rt_sd", "pl_lag", "target_rate",
-                "gaze_ref_x", "gaze_ref_y"),
-    slider = "missingthresh",
+                "fix_x", "fix_y", "fix_radius", "screen_px", "screen_cm", "view_cm"),
+    slider = c("missingthresh", "fix_thresh"),
     radio = c("interp_type", "filter", "step_first", "baseline", "baseline_method", "baseline_stat",
               "blink_method", "rate_mode", "asc_eye", "pl_start_mode", "rate_target", "zscore",
-              "gaze_model", "gaze_ref"),
-    checkbox = c("use_blink_col", "use_mad", "timelock", "resample", "pl_aoi", "shared_missing", "gaze_correct"),
+              "fix_ref", "fix_units"),
+    checkbox = c("use_blink_col", "use_mad", "timelock", "resample", "pl_aoi", "shared_missing", "fix_exclude", "bin_gaze"),
     text = c("tobii_onset", "tobii_offset", "pl_subject", "pl_start_messages", "bids_task"),
     select = c("tracker"),
     # These depend on the loaded data, so they are applied once data are loaded

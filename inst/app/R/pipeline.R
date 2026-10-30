@@ -21,7 +21,22 @@ read_gazer_files <- function(paths, names = basename(paths), eye = "average") {
     if (!"source_file" %in% names(d)) d$source_file <- names[i]
     d
   })
-  tibble::as_tibble(data.table::rbindlist(dfs, fill = TRUE))
+  out <- tibble::as_tibble(data.table::rbindlist(dfs, fill = TRUE))
+  # Screen width (px) from EyeLink DISPLAY_COORDS, for degrees of visual angle
+  asc <- grepl("\\.asc(\\.gz)?$", names, ignore.case = TRUE)
+  widths <- vapply(paths[asc], asc_display_width, numeric(1))
+  attr(out, "display_px") <- unique(widths[is.finite(widths)])
+  out
+}
+
+# Screen width in pixels from an EyeLink .asc file's DISPLAY_COORDS message
+# (left top right bottom), searched near the start of the file; NA if absent
+asc_display_width <- function(path, n = 20000) {
+  l <- tryCatch(readLines(path, n = n, warn = FALSE), error = function(e) character())
+  hit <- regmatches(l, regexpr("DISPLAY_COORDS(\\s+-?[0-9.]+){4}", l))
+  if (!length(hit)) return(NA_real_)
+  v <- as.numeric(strsplit(trimws(sub("DISPLAY_COORDS", "", hit[1])), "\\s+")[[1]])
+  v[3] - v[1] + 1
 }
 
 # fread() needs R.utils for .gz files, so decompress them with base R into a
@@ -298,7 +313,7 @@ run_pipeline_eyes <- function(data, p, log = function(...) NULL) {
   log("Processing the left and right eye separately, with the same settings and blink mask (blink in either eye)")
   one_eye <- function(d, side) {
     d$pupil <- d[[paste0("pupil_", side)]]
-    # Each eye's own gaze, for the gaze-position correction
+    # Each eye's own gaze, for the off-fixation exclusion and binned gaze
     for (v in c("x", "y")) if (paste0(v, "_", side) %in% names(d)) d[[v]] <- d[[paste0(v, "_", side)]]
     d[setdiff(names(d), c("pupil_left", "pupil_right"))]
   }
@@ -335,6 +350,7 @@ run_pipeline_eyes <- function(data, p, log = function(...) NULL) {
         TRUE ~ "excluded with the other eye"),
       excluded = reason != "kept") %>%
     dplyr::select(subject, trial, samples, prop_missing, prop_missing_left, prop_missing_right,
+                  dplyr::any_of(c("prop_off_fixation_left", "prop_off_fixation_right")),
                   subject_prop_missing, reason, excluded)
   stack <- function(part) {
     out <- dplyr::bind_rows(lapply(c("left", "right"), function(s) {
@@ -347,17 +363,16 @@ run_pipeline_eyes <- function(data, p, log = function(...) NULL) {
   }
   d <- stack("data")
   cleaned <- stack("cleaned")
-  gaze_fit <- if (isTRUE(p$gaze_correct)) stack("gaze_fit")
   timevar <- r$left$timevar
   value_col <- output_column(p)
   aggvars <- unique(c(p$group_cols, "eye", "timebins"))
   log("Binning into ", p$bin_length, " ms bins by ", paste(aggvars, collapse = ", "))
   binned <- gazer::downsample_gaze(d, bin.length = p$bin_length, timevar = timevar,
                                    aggvars = aggvars, type = "pupil", pupil = value_col)
+  if (isTRUE(p$bin_gaze)) binned <- add_binned_gaze(binned, d, p$bin_length, timevar, aggvars)
   log("Done: ", nrow(k), " trials retained for both eyes")
   list(data = d, binned = binned, quality = q, cleaned = cleaned, timevar = timevar, params = p,
-       value_col = value_col, rates = r$left$rates, rates_original = r$left$rates_original, eyes = TRUE,
-       gaze_fit = gaze_fit)
+       value_col = value_col, rates = r$left$rates, rates_original = r$left$rates_original, eyes = TRUE)
 }
 
 # Error listing why every trial was excluded.
@@ -403,14 +418,8 @@ run_pupil_pipeline <- function(data, p, log = function(...) NULL) {
     invisible(gc(verbose = FALSE))
   }
   # Settings from the first participant; counts are summarised below
-  skip <- "^(Starting|Excluding|Done|Blinks detected|Pupil outside|Dropped|Low-pass: |Binning|Sampling rate|Upsampling|Downsampling|Mixed|Resampled|Gaze position explained)"
+  skip <- "^(Starting|Excluding|Done|Blinks detected|Pupil outside|Dropped|Low-pass: |Binning|Sampling rate|Upsampling|Downsampling|Mixed|Resampled|Off fixation)"
   for (m in first_log[!grepl(skip, first_log)]) log(m)
-  gaze_fit <- dplyr::bind_rows(lapply(res, `[[`, "gaze_fit"))
-  if (nrow(gaze_fit)) {
-    log("Gaze position explained ", sprintf("%.1f%%", 100 * stats::median(gaze_fit$r_squared, na.rm = TRUE)),
-        " of pupil variance (median across participants; range ",
-        sprintf("%.1f%%-%.1f%%", 100 * min(gaze_fit$r_squared, na.rm = TRUE), 100 * max(gaze_fit$r_squared, na.rm = TRUE)), ")")
-  }
   quality <- dplyr::bind_rows(lapply(res, `[[`, "quality"))
   cleaned <- tibble::as_tibble(data.table::rbindlist(lapply(res, `[[`, "cleaned"), fill = TRUE))
   log("Blinks detected: ", sprintf("%.1f%%", 100 * mean(cleaned$blink_detected > 0, na.rm = TRUE)), " of samples")
@@ -426,12 +435,12 @@ run_pupil_pipeline <- function(data, p, log = function(...) NULL) {
   log("Binning into ", p$bin_length, " ms bins by ", paste(aggvars, collapse = ", "))
   binned <- gazer::downsample_gaze(d, bin.length = p$bin_length, timevar = timevar,
                                    aggvars = aggvars, type = "pupil", pupil = output_column(p))
+  if (isTRUE(p$bin_gaze)) binned <- add_binned_gaze(binned, d, p$bin_length, timevar, aggvars)
   log("Done: ", nrow(dplyr::distinct(d, subject, trial)), " trials retained")
   list(data = d, binned = binned, quality = quality, cleaned = cleaned, timevar = timevar,
        params = p, value_col = output_column(p),
        rates = dplyr::bind_rows(lapply(res, `[[`, "rates")),
-       rates_original = dplyr::bind_rows(lapply(res, `[[`, "rates_original")),
-       gaze_fit = gaze_fit)
+       rates_original = dplyr::bind_rows(lapply(res, `[[`, "rates_original")))
 }
 
 # Run the full pipeline on one participant (or a whole data set). Returns a list with the processed sample-level data,
@@ -523,24 +532,28 @@ run_pipeline_core <- function(data, p, log = function(...) NULL, stop_if_empty =
       dplyr::ungroup()
   }
 
-  # 3b. Optional gaze-position correction (pupil foreshortening error):
-  # fitted per participant on the cleaned samples, before interpolation
-  gaze_fit <- NULL
-  if (isTRUE(p$gaze_correct)) {
+  # 3b. Optional gaze-deviation exclusion: samples off fixation are removed
+  # (and interpolated if the trial is kept); trials with too many are
+  # excluded below
+  off_fix <- rep(FALSE, nrow(d))
+  if (isTRUE(p$fix_exclude)) {
     if (!all(c("x", "y") %in% names(d))) {
-      stop("Gaze-position correction needs gaze x and y columns: choose them under the correction in step 2, or turn the correction off.",
+      stop("Excluding gaze away from fixation needs gaze x and y columns: choose them under Gaze position in step 2.",
            call. = FALSE)
     }
-    ref <- gaze_reference(p)
-    log("Correcting pupil size for gaze position (", p$gaze_model, " surface per participant, reference ",
-        if (is.null(ref)) "median gaze" else sprintf("x = %g, y = %g", ref[1], ref[2]), ")")
-    d <- gazer::correct_pupil_gaze(d, pupil_col = "extendpupil", x_col = "x", y_col = "y",
-                                   by = "subject", model = p$gaze_model, reference = ref)
-    gaze_fit <- tibble::as_tibble(attr(d, "gaze_fit"))
-    attr(d, "gaze_fit") <- NULL
-    gaze_fit$subject <- as.character(gaze_fit$subject)
-    log("Gaze position explained ", sprintf("%.1f%%", 100 * stats::median(gaze_fit$r_squared, na.rm = TRUE)),
-        " of pupil variance (median across participants)")
+    ref <- fixation_reference(p)
+    radius <- fixation_radius(p)
+    log("Removing samples more than ",
+        if (identical(p$fix_units, "deg")) sprintf("%g° (%.1f px)", p$fix_radius, radius) else radius, " from ",
+        if (is.null(ref)) "each participant's median gaze" else sprintf("fixation (x = %g, y = %g)", ref[1], ref[2]),
+        "; excluding trials with more than ", p$fix_thresh * 100, "% off fixation")
+    off_fix <- d %>%
+      dplyr::group_by(subject) %>%
+      dplyr::mutate(.off = off_fixation(x, y, radius, ref)) %>%
+      dplyr::pull(.off)
+    off_fix <- off_fix & !is.na(d$extendpupil)
+    log("Off fixation: ", sum(off_fix), " samples removed")
+    d$extendpupil[off_fix] <- NA
   }
 
   # Keep the cleaned trace for every trial so excluded trials can still be
@@ -564,11 +577,12 @@ run_pipeline_core <- function(data, p, log = function(...) NULL, stop_if_empty =
   }
   has_event <- if (use_window) !is.na(tz) else rep(TRUE, nrow(d))
   quality <- d %>%
-    dplyr::mutate(.in = in_window, .ev = has_event, .miss = missing_raw) %>%
+    dplyr::mutate(.in = in_window, .ev = has_event, .miss = missing_raw, .off = off_fix) %>%
     dplyr::group_by(subject, trial) %>%
     dplyr::summarise(samples = sum(.in),
                      missing_n = sum(.miss[.in]),
                      prop_missing = missing_n / samples,
+                     prop_off_fixation = sum(.off[.in]) / samples,
                      valid_total = sum(!is.na(extendpupil)),
                      has_event = any(.ev),
                      .groups = "drop") %>%
@@ -585,9 +599,11 @@ run_pipeline_core <- function(data, p, log = function(...) NULL, stop_if_empty =
       subject_prop_missing > p$missingthresh ~ "subject missing data",
       valid_total < 2 ~ "no valid samples",
       prop_missing > p$missingthresh ~ "trial missing data",
+      isTRUE(p$fix_exclude) & prop_off_fixation > p$fix_thresh ~ "gaze off fixation",
       TRUE ~ "kept"),
       excluded = reason != "kept") %>%
     dplyr::select(-valid_total, -has_event, -missing_n)
+  if (!isTRUE(p$fix_exclude)) quality$prop_off_fixation <- NULL
   keep <- dplyr::filter(quality, !excluded) %>% dplyr::select(subject, trial)
   # Report behaviourally excluded trials in the same table
   if (nrow(behav_excl)) {
@@ -601,14 +617,15 @@ run_pipeline_core <- function(data, p, log = function(...) NULL, stop_if_empty =
     log("Excluding ", sum(quality$reason == r), " of ", nrow(quality), " trials (",
         sprintf("%.1f%%", 100 * sum(quality$reason == r) / nrow(quality)), "): ", r,
         if (grepl("missing", r)) paste0(" (> ", p$missingthresh * 100, "%",
-                                        if (use_window) " in the analysis window" else "", ")") else "")
+                                        if (use_window) " in the analysis window" else "", ")")
+        else if (r == "gaze off fixation") paste0(" (> ", p$fix_thresh * 100, "% of samples)") else "")
   }
   d <- dplyr::semi_join(d, keep, by = c("subject", "trial"))
   if (nrow(d) == 0) {
     names(cleaned)[names(cleaned) == ".hz"] <- "processing_hz"
     if (!stop_if_empty) {
       return(list(data = d[0, ], binned = NULL, quality = quality, cleaned = cleaned, timevar = NULL,
-                  params = p, rates = rates, rates_original = rates_original, gaze_fit = gaze_fit))
+                  params = p, rates = rates, rates_original = rates_original))
     }
     all_excluded_error(quality, p)
   }
@@ -735,6 +752,7 @@ run_pipeline_core <- function(data, p, log = function(...) NULL, stop_if_empty =
   binned <- gazer::downsample_gaze(d, bin.length = p$bin_length, timevar = timevar,
                                    aggvars = aggvars, type = "pupil",
                                    pupil = out_col)
+  if (isTRUE(p$bin_gaze)) binned <- add_binned_gaze(binned, d, p$bin_length, timevar, aggvars)
 
   log("Done: ", n_trials(d), " trials retained")
   # Name the per-participant rate clearly; drop intermediate columns
@@ -743,7 +761,7 @@ run_pipeline_core <- function(data, p, log = function(...) NULL, stop_if_empty =
   names(cleaned)[names(cleaned) == ".hz"] <- "processing_hz"
   list(data = d, binned = binned, quality = quality, cleaned = cleaned,
        timevar = timevar, params = p, rates = rates, rates_original = rates_original,
-       value_col = out_col, gaze_fit = gaze_fit)
+       value_col = out_col)
 }
 
 # The analysed pupil column: z-scored (pup_z) if re-scaling is on, otherwise
@@ -752,15 +770,59 @@ output_column <- function(p) {
   if (!is.null(p$zscore) && p$zscore %in% c("subject", "trial")) "pup_z" else "baselinecorrectedp"
 }
 
-# Reference gaze position for the gaze-position correction: NULL (each
-# participant's median gaze) or c(x, y)
-gaze_reference <- function(p) {
-  if (!identical(p$gaze_ref, "fixed")) return(NULL)
-  ref <- c(p$gaze_ref_x, p$gaze_ref_y)
+# Pixels per degree of visual angle at the screen centre
+px_per_degree <- function(screen_px, screen_cm, distance_cm) {
+  screen_px / screen_cm * distance_cm * tan(pi / 180)
+}
+
+# Maximum distance from fixation in gaze units (pixels): as entered, or
+# converted from degrees of visual angle
+fixation_radius <- function(p) {
+  if (length(p$fix_radius) != 1 || !is.finite(p$fix_radius) || p$fix_radius <= 0) {
+    stop("Enter a maximum distance from fixation above 0 (step 2).", call. = FALSE)
+  }
+  if (!identical(p$fix_units, "deg")) return(p$fix_radius)
+  geo <- c(p$screen_px, p$screen_cm, p$view_cm)
+  if (length(geo) != 3 || !all(is.finite(geo)) || any(geo <= 0)) {
+    stop("For a distance in degrees, enter the screen width (px and cm) and the viewing distance (step 2).",
+         call. = FALSE)
+  }
+  p$fix_radius * px_per_degree(p$screen_px, p$screen_cm, p$view_cm)
+}
+
+# Fixation point for the gaze-deviation exclusion: NULL (each participant's
+# median gaze) or c(x, y)
+fixation_reference <- function(p) {
+  if (!identical(p$fix_ref, "fixed")) return(NULL)
+  ref <- c(p$fix_x, p$fix_y)
   if (length(ref) != 2 || !all(is.finite(ref))) {
-    stop("Enter the x and y of the reference position for the gaze-position correction (step 2).", call. = FALSE)
+    stop("Enter the x and y of the fixation point (step 2).", call. = FALSE)
   }
   ref
+}
+
+# TRUE for samples whose gaze is more than `radius` (gaze units) from the
+# fixation point `ref`, or from the median gaze when `ref` is NULL. Samples
+# with no gaze are not off fixation.
+off_fixation <- function(x, y, radius, ref = NULL) {
+  ok <- is.finite(x) & is.finite(y)
+  if (!any(ok)) return(ok)
+  if (is.null(ref)) ref <- c(stats::median(x[ok]), stats::median(y[ok]))
+  ok & sqrt((x - ref[1])^2 + (y - ref[2])^2) > radius
+}
+
+# Mean gaze x and y per bin (gaze_x, gaze_y), over samples with a valid
+# pupil, joined onto the binned pupil data. Bins as in gazer::downsample_gaze().
+add_binned_gaze <- function(binned, d, bin_length, timevar, aggvars) {
+  if (!all(c("x", "y") %in% names(d))) {
+    stop("Mean gaze per bin needs gaze x and y columns: choose them under Gaze position in step 2.", call. = FALSE)
+  }
+  ok <- is.finite(d$x) & is.finite(d$y) & !is.na(d$extendpupil)
+  d <- d[ok, , drop = FALSE]
+  d$timebins <- round(d[[timevar]] / bin_length) * bin_length
+  g <- dplyr::summarise(dplyr::group_by(d, dplyr::across(dplyr::all_of(aggvars))),
+                        gaze_x = mean(x), gaze_y = mean(y), .groups = "drop")
+  dplyr::left_join(binned, g, by = aggvars)
 }
 
 # ---- Summaries for plotting ---------------------------------------------
@@ -949,7 +1011,7 @@ column_descriptions <- c(
   upsampled = "TRUE for samples added by upsampling (values interpolated from the real samples either side), FALSE for recorded samples.",
   processing_hz = "Sampling rate (Hz) used to process this participant.",
   blink_detected = "1 if the sample was removed as a blink (tracker blinks and/or noise-based detection), before padding.",
-  extendpupil = "Pupil after removing blinks (with padding), out-of-range values and dilation-speed outliers, and after the gaze-position correction if used. NA = removed or missing.",
+  extendpupil = "Pupil after removing blinks (with padding), out-of-range values and dilation-speed outliers, and samples off fixation if that exclusion is used. NA = removed or missing.",
   pup = "Pupil with blink samples set to NA (intermediate step of smooth_interpolate_pupil()).",
   interp = "Pupil after interpolation, before smoothing (when interpolating first).",
   index = "Sample index used for cubic-spline interpolation.",
@@ -965,6 +1027,9 @@ column_descriptions <- c(
   samples = "Number of samples in the trial (inside the analysis window when time-locked).",
   pupil_icc = "Binocular 'Both' only: left-right pupil agreement in the trial as loaded, intraclass correlation ICC(A,1) over samples with both eyes valid (gazer::pupil_cor). Lower when one eye reads larger.",
   pupil_r = "Binocular 'Both' only: left-right pupil correlation in the trial as loaded, over samples with both eyes valid (gazer::pupil_cor). Do the eyes rise and fall together?",
+  prop_off_fixation = "Proportion of samples with gaze further than the maximum distance from fixation (removed), inside the analysis window when time-locked. Only with Exclude gaze away from fixation.",
+  gaze_x = "Mean horizontal gaze position in the bin, over samples with a valid pupil. Only with Add mean gaze x/y per bin.",
+  gaze_y = "Mean vertical gaze position in the bin, over samples with a valid pupil. Only with Add mean gaze x/y per bin.",
   prop_missing = "Proportion of samples missing (tracker loss, blinks and out-of-range values, before blink padding and speed-outlier removal), inside the analysis window when time-locked.",
   subject_prop_missing = "Proportion of the participant's samples missing, pooled across all their analysable trials (inside the analysis window when time-locked).",
   reason = "Why the trial was excluded, or 'kept'.",
@@ -1133,23 +1198,10 @@ methods_paragraph <- function(res, meta) {
     refs <- c(refs, kret = "Kret, M. E., & Sjak-Shie, E. E. (2019). Preprocessing pupil size data: Guidelines and code. *Behavior Research Methods, 51*, 1336–1342.")
     s <- c(s, sprintf("Samples with implausibly fast changes in pupil size (dilation speed more than %s median absolute deviations above the median, per trial) were also removed (Kret & Sjak-Shie, 2019).", p$mad_n))
   }
-  if (isTRUE(p$gaze_correct)) {
-    refs <- c(refs,
-              gagl = "Gagl, B., Hawelka, S., & Hutzler, F. (2011). Systematic influence of gaze position on pupil size measurement: Analysis and correction. *Behavior Research Methods, 43*, 1171–1181.",
-              hayes = "Hayes, T. R., & Petrov, A. A. (2016). Mapping and correcting the influence of gaze position on pupil size measurements. *Behavior Research Methods, 48*, 510–527.")
-    ref <- gaze_reference(p)
-    gf <- res$gaze_fit
-    r2 <- if (!is.null(gf) && nrow(gf)) gf$r_squared[is.finite(gf$r_squared)] else numeric()
-    s <- c(s, sprintf("To correct for the effect of gaze position on measured pupil size (pupil foreshortening error; Hayes & Petrov, 2016), pupil size was regressed on gaze position for each participant (%s; Gagl et al., 2011), and the change predicted between each sample's gaze position and %s was subtracted%s.",
-                      if (p$gaze_model == "linear") "linear terms for horizontal and vertical position"
-                      else "a quadratic surface: horizontal and vertical position, their squares and their product",
-                      if (is.null(ref)) "the participant's median gaze position" else sprintf("a reference position (x = %s, y = %s)", ref[1], ref[2]),
-                      if (length(r2)) sprintf(" (gaze position explained a median of %s of the variance in pupil size, range %s–%s)",
-                                              pct(stats::median(r2)), pct(min(r2)), pct(max(r2))) else ""))
-  }
 
   # Behavioural exclusions
-  beh <- q[!q$reason %in% c("kept", "trial missing data", "subject missing data", "no valid samples") &
+  beh <- q[!q$reason %in% c("kept", "trial missing data", "subject missing data", "no valid samples", "gaze off fixation") &
+             !grepl("off fixation$", q$reason) &
              !grepl("^no '", q$reason), ]
   if (nrow(beh)) {
     parts <- vapply(split(beh, beh$reason), function(b) sprintf("%s (%d trials, %s)", b$reason[1], nrow(b), pct(nrow(b) / nrow(q))), "")
@@ -1212,6 +1264,10 @@ methods_paragraph <- function(res, meta) {
   grp <- setdiff(p$group_cols, "timebins")
   s <- c(s, sprintf("Data were then averaged into %s-ms time bins%s.", p$bin_length,
                     if (length(grp)) paste0(" per ", and_join(grp)) else ""))
+  if (isTRUE(p$bin_gaze)) {
+    refs <- c(refs, hayes = "Hayes, T. R., & Petrov, A. A. (2016). Mapping and correcting the influence of gaze position on pupil size measurements. *Behavior Research Methods, 48*, 510–527.")
+    s <- c(s, "The mean horizontal and vertical gaze position in each bin were kept, so that gaze position could be included as a covariate to account for its effect on measured pupil size (Hayes & Petrov, 2016).")
+  }
 
   # Outcome
   n_sub <- length(unique(q$subject))
@@ -1226,6 +1282,19 @@ methods_paragraph <- function(res, meta) {
   if (nrow(missing_tr)) excl <- c(excl, sprintf("%s%s trial%s", if (length(subj_out)) "a further " else "",
                                                 num(nrow(missing_tr)), if (nrow(missing_tr) != 1) "s" else ""))
   if (length(excl)) s <- c(s, sprintf("Missing data led to the exclusion of %s.", paste(excl, collapse = " and ")))
+  if (isTRUE(p$fix_exclude)) {
+    off_tr <- sum(grepl("off fixation$", q$reason))
+    fref <- fixation_reference(p)
+    dist <- if (identical(p$fix_units, "deg"))
+      sprintf("%s° of visual angle (%s px; screen %s cm and %s px wide, viewed from %s cm)", p$fix_radius,
+              num(fixation_radius(p)), p$screen_cm, p$screen_px, p$view_cm)
+      else sprintf("%s (in gaze coordinates)", p$fix_radius)
+    s <- c(s, sprintf("Samples whose gaze was more than %s from %s were removed, and trials with more than %s of samples off fixation%s were excluded (%s trial%s).",
+                      dist,
+                      if (is.null(fref)) "the participant's median gaze position" else sprintf("the fixation point (x = %s, y = %s)", fref[1], fref[2]),
+                      pct(p$fix_thresh, 0), if (win) " within the analysis window" else "",
+                      num(off_tr), if (off_tr != 1) "s" else ""))
+  }
   if (length(per_sub) > 1) {
     s <- c(s, sprintf("Participants contributed on average %s trials (SD = %s, range %d–%d), and on average %s of samples per retained trial were interpolated.",
                       num(mean(per_sub), 1), num(stats::sd(per_sub), 1), min(per_sub), max(per_sub),

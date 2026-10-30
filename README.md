@@ -29,7 +29,7 @@ Or from GitHub:
 remotes::install_github("jgeller112/shiny-gazeR")
 ```
 
-Either way, gazeR (≥ 0.2.15) is installed too.
+Either way, gazeR (≥ 0.2.14) is installed too.
 
 ## Usage
 
@@ -45,11 +45,11 @@ Choose **Try the example data** on the home page to look around before loading y
 |---|---|---|
 | **Load** | EyeLink `.asc`, SR Data Viewer sample reports, Tobii (Titta), Pupil Labs Neon (`.zip` of the Pupil Cloud export), or any long CSV; monocular or binocular (left, right, average or both) | `read_asc()`, `merge_tobii_titta()`, `parse_pl()` |
 | **Behaviour** | Join a per-trial table (RT, accuracy, …); exclude incorrect trials, RT cutoffs, ± k SD within subject | — |
-| **Blinks & artifacts** | Plausible pupil range; tracker or noise-based blinks (Hershman et al., 2018); blink padding; dilation-speed outliers; gaze-position (foreshortening) correction | `detect_blinks_noise()`, `extend_blinks()`, `speed_pupil()`, `calc_mad()`, `correct_pupil_gaze()` |
+| **Blinks & artifacts** | Plausible pupil range; tracker or noise-based blinks (Hershman et al., 2018); blink padding; dilation-speed outliers; gaze-deviation (off-fixation) exclusion | `detect_blinks_noise()`, `extend_blinks()`, `speed_pupil()`, `calc_mad()` |
 | **Missing data** | Exclude trials and subjects above a threshold, measured inside the analysis window | — |
 | **Interpolate & smooth** | Linear or cubic; moving average or Hanning; either order; optional zero-phase Butterworth low-pass | `smooth_interpolate_pupil()`, `lowpass_filter()` |
 | **Baseline & time-lock** | Subtractive or divisive; from an event or a fixed window; align trials to any message | `baseline_correction_pupil_msg()`, `baseline_correction_pupil()`, `onset_pupil()` |
-| **Bin** | Any combination of subject, trial and condition columns | `downsample_gaze()` |
+| **Bin** | Any combination of subject, trial and condition columns; optional mean gaze x/y per bin | `downsample_gaze()` |
 
 **Inspect and report**
 

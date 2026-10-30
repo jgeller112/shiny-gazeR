@@ -7,17 +7,22 @@
   readers, sampling rates, behavioural exclusions) copied from the app's own
   code. It gives the same processed samples, binned data and trial
   exclusions as the app, and saves them as CSVs.
-* Step 2: **Correct pupil size for gaze position** (pupil foreshortening
-  error; Hayes & Petrov, 2016), with gazer::correct_pupil_gaze() (needs
-  gazer >= 0.2.15). Per participant, pupil size is regressed on gaze x and y
-  (quadratic or linear) and the change predicted relative to a reference
-  position (median gaze, or a fixed point such as the screen centre) is
-  subtracted, after blink and artifact removal and before interpolation.
-  With Eye = Both each eye uses its own gaze. The Quality tab shows each
-  participant's fit (samples, R², largest correction); the methods
-  paragraph, study file and R script include it.
-  Ticking it shows **Gaze x** and **Gaze y**, the gaze columns to use
-  (guessed automatically, including SR Data Viewer's AVERAGE_GAZE_X/Y).
+* Step 2: **Exclude gaze away from fixation**. Samples further than a
+  maximum distance from the fixation point (each participant's median gaze,
+  or a fixed point; distance in pixels, or in degrees of visual angle from
+  the screen width and viewing distance, with the EyeLink resolution read
+  from DISPLAY_COORDS) are removed, and trials with more than a set
+  percentage of samples off fixation are excluded ("gaze off fixation";
+  inside the analysis window when time-locked). The trial table shows each
+  trial's percentage off fixation; the methods paragraph, study file and R
+  script include it.
+* Step 5: **Add mean gaze x/y per bin** adds `gaze_x` and `gaze_y` to the
+  binned data, so gaze position can be a covariate in statistical models
+  (accounting for the pupil foreshortening error without changing the
+  pupil data). The methods paragraph says so.
+* Ticking either gaze option shows **Gaze x** and **Gaze y** (step 2,
+  under **Gaze position**), the gaze columns to use (guessed
+  automatically, including SR Data Viewer's AVERAGE_GAZE_X/Y).
 
 # shinygazer 0.3.7
 
