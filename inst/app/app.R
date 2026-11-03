@@ -158,8 +158,8 @@ sidebar_ui <- sidebar(
       conditionalPanel("input.tracker == 'bids'",
                        textInput("bids_trial_start", info("Trial start messages", "Comma-separated. A new trial starts at each event message beginning with one of these (e.g. TRIALID for EyeLink data), and time is ms from it. Leave blank to treat each run as one trial (e.g. resting state)."),
                                  placeholder = "e.g. TRIALID")),
-      conditionalPanel("['auto', 'eyelink', 'tobii', 'prolab', 'bids'].indexOf(input.tracker) >= 0",
-                       radioButtons("asc_eye", info("Eye (binocular)", "Average: pupil, x and y are the monocular mean, as EyeLink reports the average eye: the mean of both eyes, or the one valid eye; blink is 1 if either eye is blinking. Both: also keeps pupil_left / pupil_right, x/y and blink_left / blink_right for each eye, so you can map one eye below (use its matching blink column). Changing this re-reads the files."),
+      conditionalPanel("['auto', 'eyelink', 'tobii', 'prolab', 'bids', 'sr', 'generic'].indexOf(input.tracker) >= 0",
+                       radioButtons("asc_eye", info("Eye (binocular)", "Average: pupil, x and y are the monocular mean, as EyeLink reports the average eye: the mean of both eyes, or the one valid eye; blink is 1 if either eye is blinking. Both: also keeps pupil_left / pupil_right, x/y and blink_left / blink_right for each eye, so you can map one eye below (use its matching blink column). CSV and SR Data Viewer files: used when the file has left and right pupil columns (e.g. pupil_left / pupil_right, or LEFT_PUPIL_SIZE / RIGHT_PUPIL_SIZE). Changing this re-reads the files."),
                                     c(Average = "average", Left = "left", Right = "right", Both = "both"), inline = TRUE),
                        conditionalPanel("input.asc_eye == 'both'",
                                         p(class = "small text-muted mb-1", icon("eye"),
@@ -177,6 +177,25 @@ sidebar_ui <- sidebar(
         selectInput("col_blink", info("Blink", "Optional. 1 = sample is in a blink."), NULL),
         selectInput("col_message", info("Message", "Optional. Event markers, needed for event-based baselines and time-locking."), NULL)
       ),
+      conditionalPanel("output.eye_cols_shown",
+                       tags$div(class = "section-label", info("Left and right eye",
+                                                              "Shown for CSVs and SR sample reports, and for any tracker with Eye = Both. Map both pupil columns and the Eye setting (Average, Left, Right, Both) is applied: pupil, gaze and blink then come from these columns, and the Pupil and Blink above (and Gaze x/y in step 2) are not used. Leave the pupils at (none) for a file with one pupil column.")),
+                       uiOutput("eye_cols_note"),
+                       layout_columns(
+                         col_widths = c(6, 6), gap = "0.5rem",
+                         selectInput("col_pupil_left", "Left pupil", NULL),
+                         selectInput("col_pupil_right", "Right pupil", NULL),
+                         selectInput("col_x_left", "Left gaze x", NULL),
+                         selectInput("col_x_right", "Right gaze x", NULL),
+                         selectInput("col_y_left", "Left gaze y", NULL),
+                         selectInput("col_y_right", "Right gaze y", NULL)
+                       ),
+                       # Both: one blink mask (blink in either eye) for both eyes
+                       conditionalPanel("input.asc_eye != 'both'",
+                                        layout_columns(
+                                          col_widths = c(6, 6), gap = "0.5rem",
+                                          selectInput("col_blink_left", "Left blink", NULL),
+                                          selectInput("col_blink_right", "Right blink", NULL)))),
       uiOutput("rate_ui"),
       radioButtons("rate_target", info("Resample",
                                        "Keep: each participant is processed at their recorded rate (see above if rates differ). Resample all to: every participant is brought to one rate. Higher rates are downsampled by averaging consecutive samples (a bin with any missing sample stays missing; blinks and messages are kept); lower rates are upsampled with gazer::upsample_gaze(), new samples interpolated from their neighbours."),
@@ -195,6 +214,8 @@ sidebar_ui <- sidebar(
         numericInput("pupil_min", info("Min pupil", "Samples below this become missing. Leave blank for no limit. 2 mm is a common floor for diameter in mm."), NA),
         numericInput("pupil_max", info("Max pupil", "Samples above this become missing. Leave blank for no limit (9 mm for diameter in mm)."), NA)
       ),
+      numericInput("pupil_sd", info("Max SDs from mean",
+                                    "Samples more than this many standard deviations from the participant's mean pupil size become missing (e.g. 3), computed after removing blinks and out-of-range values. Leave blank for no limit. Can be used with or instead of the min/max range."), NA, min = 0, step = 0.5),
       radioButtons("blink_method", info("Blink detection",
                                         "Tracker: blinks flagged by the eye tracker (EyeLink blink events or your blink column), padded by the amounts below. Noise-based: Hershman, Henik & Cohen (2018). Each run of missing samples is widened along the smoothed pupil signal to cover the eyelid closing and reopening, so it needs little or no padding. gazeR::detect_blinks_noise()"),
                    c("Tracker" = "tracker", "Noise-based (Hershman)" = "hershman"), inline = TRUE),
@@ -513,16 +534,22 @@ server <- function(input, output, session) {
   pending_groups <- reactiveVal(NULL)  # preselected grouping for the example data
   loaded_example <- reactiveVal(FALSE) # the example data, not uploads (for the R script)
   run_meta <- reactiveVal(NULL)        # script_meta() at the last run
+  raw_delimited <- reactiveVal(FALSE)  # loaded from delimited files (eyes mapped by column)
 
   add_log <- function(...) {
     log_lines(c(log_lines(), paste0(format(Sys.time(), "%H:%M:%S"), "  ", ...)))
   }
 
   # Store newly loaded data and guess the column mapping.
-  set_raw <- function(d, label) {
+  set_raw <- function(d, label, delimited = FALSE) {
     raw(d)
+    raw_delimited(delimited)
     result(NULL)
     cols <- names(d)
+    guess <- guess_eye_cols(cols)
+    for (nm in names(guess)) {
+      updateSelectInput(session, paste0("col_", nm), choices = c("(none)" = "", cols), selected = guess[[nm]])
+    }
     for (nm in names(col_candidates)) {
       optional <- nm %in% c("blink", "message", "x", "y")
       choices <- if (optional) c("(none)" = "", cols) else cols
@@ -607,6 +634,14 @@ server <- function(input, output, session) {
                     input$bids_trial_start, input$prolab_trial_start), {
     req(input$files)
     if (input$tracker == "tobii" && is.null(input$msg_files)) return()
+    # Delimited files don't depend on the Eye setting (applied by column
+    # mapping), so don't re-read them, keeping the mapping, when only it changed
+    key <- list(input$files$datapath, input$msg_files$datapath, input$tracker, input$tobii_onset,
+                input$tobii_offset, input$pl_subject, input$pl_start_mode, input$pl_start_messages,
+                input$pl_lag, input$pl_aoi, input$bids_trial_start, input$prolab_trial_start,
+                if (!delimited_upload()) input$asc_eye)
+    if (identical(key, last_read())) return()
+    last_read(key)
     d <- tryCatch(withProgress(message = "Reading files", value = 0.3, read_uploads()),
                   error = function(e) {
                     showNotification(conditionMessage(e), type = "error", duration = 10)
@@ -630,14 +665,20 @@ server <- function(input, output, session) {
     loaded_example(FALSE)
     # Screen width for degrees of visual angle, from EyeLink DISPLAY_COORDS
     if (length(attr(d, "display_px"))) updateNumericInput(session, "screen_px", value = max(attr(d, "display_px")))
-    set_raw(d, paste(nrow(input$files), "file(s)"))
+    set_raw(d, paste(nrow(input$files), "file(s)"), delimited = delimited_upload())
   })
   bids_info <- reactiveVal(NULL)
+  last_read <- reactiveVal(NULL)
+  # Uploads read as delimited tables (not EyeLink .asc or a tracker reader)
+  delimited_upload <- function() {
+    input$tracker %in% c("sr", "generic") ||
+      (input$tracker == "auto" && !any(grepl("\\.asc(\\.gz)?$", input$files$name, ignore.case = TRUE)))
+  }
 
   load_example <- function() {
     pending_groups(c("subject", "script"))
     loaded_example(TRUE)
-    set_raw(read_gazer_files(example_path), "example data")
+    set_raw(read_gazer_files(example_path), "example data", delimited = TRUE)
   }
   observeEvent(input$load_example, load_example())
   observeEvent(input$home_example, load_example())
@@ -668,28 +709,76 @@ server <- function(input, output, session) {
     add_log("Loaded behavioural data: ", nrow(b), " rows, ", ncol(b), " columns")
   })
 
+  # Whether the Eye setting applies to the loaded data: binocular trackers,
+  # or delimited files with left and right pupil columns
+  eye_applies <- reactive({
+    if (raw_delimited()) table_eyes_on() else input$tracker %in% c("auto", "eyelink", "tobii", "prolab", "bids")
+  })
+
+  # Per-eye column mapping for delimited files, and whether it is in use
+  # (both pupil columns mapped)
+  eye_cols <- reactive({
+    nms <- names(guess_eye_cols(character()))
+    stats::setNames(lapply(nms, function(nm) {
+      v <- input[[paste0("col_", nm)]]
+      if (is.null(v)) "" else v
+    }), nms)
+  })
+  # Delimited files with any Eye setting; other trackers' per-eye columns
+  # (pupil_left / pupil_right, ...) with Eye = Both
+  table_eyes_on <- reactive({
+    !is.null(raw()) && (raw_delimited() || identical(input$asc_eye, "both")) &&
+      all(c(eye_cols()$pupil_left, eye_cols()$pupil_right) %in% names(raw()))
+  })
+  output$eye_cols_shown <- reactive(!is.null(raw()) && (raw_delimited() || identical(input$asc_eye, "both")))
+  outputOptions(output, "eye_cols_shown", suspendWhenHidden = FALSE)
+  output$eye_cols_note <- renderUI({
+    if (!table_eyes_on()) return(NULL)
+    p(class = "small text-muted mb-1", icon("eye"),
+      sprintf(" Eye = %s from these columns: Pupil, Blink and Gaze x/y are taken from them.",
+              tools::toTitleCase(input$asc_eye)),
+      if (identical(input$asc_eye, "both")) " Both eyes use the one blink column, blink (a blink in either eye).")
+  })
+  # Both: the blink mapping is the either-eye blink column
+  observeEvent(list(input$asc_eye, raw()), {
+    if (identical(input$asc_eye, "both") && "blink" %in% names(raw())) {
+      updateSelectInput(session, "col_blink", selected = "blink")
+    }
+  })
+
+  # The loaded data with the eyes picked or averaged by column (delimited files)
+  loaded <- reactive({
+    req(raw())
+    if (table_eyes_on()) table_eyes(raw(), input$asc_eye, eye_cols()) else raw()
+  })
+
   # Eye = Both with per-eye pupil columns: each eye is processed separately,
   # with the either-eye blink mask (pupil and blink mappings are not used)
   eyes_mode <- reactive({
-    identical(input$asc_eye, "both") && !is.null(raw()) &&
-      input$tracker %in% c("auto", "eyelink", "tobii", "prolab", "bids") &&
-      all(c("pupil_left", "pupil_right") %in% names(raw()))
+    identical(input$asc_eye, "both") && !is.null(raw()) && eye_applies() &&
+      all(c("pupil_left", "pupil_right") %in% names(loaded()))
   })
 
   # Column mapping passed to standardise_columns() (also written into the R script)
   col_map <- reactive({
     req(raw(), input$col_subject, input$col_trial, input$col_time, input$col_pupil)
     eyes <- eyes_mode()
+    d <- loaded()
+    # Eyes mapped by column: pupil, blink and gaze are the combined columns
+    by_col <- table_eyes_on()
+    pick <- function(col, input_col) if ((eyes || by_col) && col %in% names(d)) col else input_col
     list(subject = input$col_subject, trial = input$col_trial, time = input$col_time,
-         pupil = if (eyes && "pupil" %in% names(raw())) "pupil" else input$col_pupil,
-         blink = if (eyes && "blink" %in% names(raw())) "blink" else input$col_blink,
-         message = input$col_message, x = input$col_x, y = input$col_y)
+         pupil = pick("pupil", input$col_pupil),
+         blink = if (by_col && !"blink" %in% names(d)) input$col_blink else pick("blink", input$col_blink),
+         message = input$col_message,
+         x = if (by_col) pick("x", input$col_x) else input$col_x,
+         y = if (by_col) pick("y", input$col_y) else input$col_y)
   })
 
   std <- reactive({
     cols <- col_map()
     d <- tryCatch(
-      standardise_columns(raw(), cols),
+      standardise_columns(loaded(), cols),
       error = function(e) {
         showNotification(conditionMessage(e), type = "error")
         NULL
@@ -911,7 +1000,7 @@ server <- function(input, output, session) {
   # Missing data and blinks per participant and eye, from the data as loaded
   eye_stats <- reactive({
     req(std())
-    label <- if (input$tracker %in% c("auto", "eyelink", "tobii", "prolab", "bids") && !is.null(input$asc_eye) &&
+    label <- if (eye_applies() && !is.null(input$asc_eye) &&
                  input$asc_eye %in% c("left", "right", "average")) {
       c(left = "left", right = "right", average = "average (both eyes)")[[input$asc_eye]]
     } else "pupil"
@@ -1012,7 +1101,7 @@ server <- function(input, output, session) {
       use_blink_col = input$use_blink_col,
       acc_col = input$acc_col, acc_correct = input$acc_correct, rt_col = input$rt_col,
       rt_min = input$rt_min, rt_max = input$rt_max, rt_sd = input$rt_sd,
-      pupil_min = input$pupil_min, pupil_max = input$pupil_max,
+      pupil_min = input$pupil_min, pupil_max = input$pupil_max, pupil_sd = input$pupil_sd,
       blink_method = input$blink_method, hershman_smooth = input$hershman_smooth,
       hershman_gap = input$hershman_gap,
       # Noise-based detection already finds blink onset and offset: no padding
@@ -2151,7 +2240,7 @@ server <- function(input, output, session) {
   study_inputs <- list(
     numeric = c("hz", "fillback", "fillforward", "mad_n", "hershman_smooth", "hershman_gap", "maxgap", "ma_n",
                 "lp_cutoff", "lp_order", "baseline_dur", "bw_start", "bw_end", "win_start", "win_end",
-                "bin_length", "pupil_min", "pupil_max", "rt_min", "rt_max", "rt_sd", "pl_lag", "target_rate",
+                "bin_length", "pupil_min", "pupil_max", "pupil_sd", "rt_min", "rt_max", "rt_sd", "pl_lag", "target_rate",
                 "fix_x", "fix_y", "fix_radius", "screen_px", "screen_cm", "view_cm"),
     slider = c("missingthresh", "fix_thresh"),
     radio = c("interp_type", "filter", "step_first", "baseline", "baseline_method", "baseline_stat",
@@ -2162,7 +2251,7 @@ server <- function(input, output, session) {
     select = c("tracker"),
     # These depend on the loaded data, so they are applied once data are loaded
     data_select = c("col_subject", "col_trial", "col_time", "col_pupil", "col_blink", "col_message",
-                    "col_x", "col_y", "acc_col", "rt_col"),
+                    "col_x", "col_y", "acc_col", "rt_col", paste0("col_", names(guess_eye_cols(character())))),
     data_multi = c("baseline_event", "timelock_event", "group_cols", "acc_correct")
   )
 
@@ -2251,7 +2340,7 @@ server <- function(input, output, session) {
     list(tracker = tracker,
          binocular = identical(input$tracker, "tobii") || "both" %in% rec,
          mono_eye = if (length(rec) == 1 && rec != "both") rec else NULL,
-         eye = if (input$tracker %in% c("auto", "eyelink", "tobii", "prolab", "bids")) input$asc_eye else NA,
+         eye = if (eye_applies()) input$asc_eye else NA,
          pupil_col = input$col_pupil,
          gazer_version = gazer_version, app_version = app_version)
   })
@@ -2303,6 +2392,7 @@ server <- function(input, output, session) {
          pl_start_messages = input$pl_start_messages, pl_lag = input$pl_lag, pl_aoi = input$pl_aoi,
          prolab_trial_start = input$prolab_trial_start, bids_trial_start = input$bids_trial_start,
          cols = col_map(),
+         eye_cols = if (table_eyes_on()) eye_cols(),
          behav_file = if (!is.null(input$behav_file) && length(input$behav_keys)) input$behav_file$name,
          behav_keys = input$behav_keys,
          eyes = eyes_mode(), has_message = "message" %in% names(std()),

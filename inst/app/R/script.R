@@ -115,6 +115,13 @@ pipeline_script <- function(p, meta) {
       fns <- c(fns, "read_gazer_files")
       l("raw <- read_gazer_files(files, basename(files), eye = ", lit(eye), ")")
     })
+  if (length(meta$eye_cols)) {
+    fns <- c(fns, "table_eyes")
+    ec <- meta$eye_cols[vapply(meta$eye_cols, nzchar, logical(1))]
+    l("# Left and right eye columns: pupil, x, y and blink for Eye = ", lit(eye))
+    l("raw <- table_eyes(raw, eye = ", lit(eye), ", cols = list(",
+      paste(sprintf("%s = %s", names(ec), vapply(ec, lit, character(1))), collapse = ", "), "))")
+  }
   l("")
   l("# Column mapping: rename to gazeR's column names")
   cols <- meta$cols[vapply(meta$cols, has, logical(1))]
@@ -165,6 +172,11 @@ pipeline_script <- function(p, meta) {
     b("  ungroup()")
   }
   b("d$pupil[d$blink_detected == 1] <- NA")
+  if (num(p$pupil_sd)) {
+    fns <- c(fns, "pupil_sd_outliers")
+    b("d$pupil[pupil_sd_outliers(d$pupil, d$subject, ", lit(p$pupil_sd), ")] <- NA  # more than ", p$pupil_sd,
+      " SD from the participant's mean")
+  }
   b("# Missing data for the exclusion threshold: before padding and speed outliers")
   b("missing_raw <- is.na(d$pupil)")
   b("")

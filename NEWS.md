@@ -25,6 +25,21 @@
   automatically, including SR Data Viewer's AVERAGE_GAZE_X/Y).
 * Blink padding (*Extend back/forward*, step 2) now defaults to 0 ms
   instead of 100 ms.
+* Step 2: **Max SDs from mean**. Optionally set pupil samples more than N
+  standard deviations from the participant's mean pupil size to missing
+  (after blinks and the min/max range), with or instead of the min/max
+  range. They count as missing for the exclusion threshold; the log,
+  methods paragraph, study file and R script include it.
+* Eye (Average / Left / Right / Both) now also works for gazeR-style CSVs
+  and SR Data Viewer sample reports with a column per eye. The column
+  mapping has a **Left and right eye** section (left/right pupil, blink and
+  gaze x/y), guessed from common names (`pupil_left`, `LEFT_PUPIL_SIZE`,
+  `LEFT_IN_BLINK`, ...) and editable for any others. Average is the
+  monocular mean, and Both processes each eye separately, as for EyeLink
+  files. With Eye = Both the section is shown for every tracker (EyeLink,
+  Tobii, ...), filled with the reader's `pupil_left` / `pupil_right`,
+  `blink_left` / `blink_right` and gaze columns. The R script includes the
+  mapping.
 
 # shinygazer 0.3.7
 

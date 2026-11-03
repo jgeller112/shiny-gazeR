@@ -29,6 +29,70 @@ read_gazer_files <- function(paths, names = basename(paths), eye = "average") {
   out
 }
 
+# Left and right eye columns in delimited files (gazeR-style, SR Data Viewer
+# sample reports): name patterns guessed, ignoring case, for the column mapping
+table_eye_cols <- list(
+  pupil = c("pupil_%s", "%s_pupil", "%s_pupil_size", "pupil_size_%s", "%s_pupil_diameter"),
+  x = c("x_%s", "%s_x", "%s_gaze_x", "gaze_x_%s"),
+  y = c("y_%s", "%s_y", "%s_gaze_y", "gaze_y_%s"),
+  blink = c("blink_%s", "%s_blink", "%s_in_blink")
+)
+
+# Guessed per-eye columns: a named list (pupil_left, pupil_right, x_left, ...,
+# blink_right) of column names, "" where none matches
+guess_eye_cols <- function(cols) {
+  out <- list()
+  for (w in names(table_eye_cols)) for (s in c("left", "right")) {
+    hit <- match(tolower(sprintf(table_eye_cols[[w]], s)), tolower(cols))
+    hit <- hit[!is.na(hit)]
+    out[[paste0(w, "_", s)]] <- if (length(hit)) cols[hit[1]] else ""
+  }
+  out
+}
+
+# Binocular delimited files: pick or average the eyes (as combine_eyes()) from
+# the mapped per-eye columns `cols` (as guess_eye_cols()), writing pupil, x, y
+# and blink (the chosen eye's blink for Left and Right, either eye's for
+# Average and Both; Both also keeps blink_left / blink_right). Without both pupil columns, d is unchanged.
+table_eyes <- function(d, eye = "average", cols) {
+  has <- function(nm) !is.null(cols[[nm]]) && nzchar(cols[[nm]]) && cols[[nm]] %in% names(d)
+  if (!has("pupil_left") || !has("pupil_right")) return(d)
+  col <- function(nm) {
+    if (!has(nm)) return(rep(NA_real_, nrow(d)))
+    suppressWarnings(as.numeric(d[[cols[[nm]]]]))
+  }
+  side <- function(s) {
+    pupil <- col(paste0("pupil_", s))
+    pupil[!is.na(pupil) & pupil <= 0] <- NA
+    list(pupil = pupil, x = col(paste0("x_", s)), y = col(paste0("y_", s)))
+  }
+  d <- as.data.frame(d)
+  d <- combine_eyes(d, side("left"), side("right"), eye)
+  if (!has("x_left") && !has("x_right")) {
+    d[intersect(c("x", "x_left", "x_right"), names(d))] <- NULL
+  }
+  if (!has("y_left") && !has("y_right")) {
+    d[intersect(c("y", "y_left", "y_right"), names(d))] <- NULL
+  }
+  # Blink: the chosen eye's (Left, Right), or either eye's (Average, Both)
+  blink <- function(s) {
+    v <- col(paste0("blink_", s))
+    as.integer(!is.na(v) & v == 1)
+  }
+  if (eye %in% c("left", "right")) {
+    if (has(paste0("blink_", eye))) d$blink <- blink(eye)
+  } else if (has("blink_left") || has("blink_right")) {
+    bl <- if (has("blink_left")) blink("left") else 0L
+    br <- if (has("blink_right")) blink("right") else 0L
+    d$blink <- pmax(bl, br)
+    if (eye == "both") {
+      d$blink_left <- bl
+      d$blink_right <- br
+    }
+  }
+  tibble::as_tibble(d)
+}
+
 # Screen width in pixels from an EyeLink .asc file's DISPLAY_COORDS message
 # (left top right bottom), searched near the start of the file; NA if absent
 asc_display_width <- function(path, n = 20000) {
@@ -509,8 +573,18 @@ run_pipeline_core <- function(data, p, log = function(...) NULL, stop_if_empty =
   log("Blinks detected: ", sum(grepl(" 1$", r$values)), " (",
       sprintf("%.1f%%", 100 * mean(d$blink_detected)), " of samples)")
 
+  # Optional SD criterion: samples more than pupil_sd SDs from the
+  # participant's mean (after the range and blinks are removed) are missing
+  if (!is.null(p$pupil_sd) && length(p$pupil_sd) == 1 && is.finite(p$pupil_sd)) {
+    if (p$pupil_sd <= 0) stop("Max SDs from the mean must be greater than 0.", call. = FALSE)
+    out_sd <- pupil_sd_outliers(d$pupil, d$subject, p$pupil_sd)
+    log("Pupil more than ", p$pupil_sd, " SD from the participant's mean: ", sum(out_sd),
+        " samples set to missing")
+    d$pupil[out_sd] <- NA
+  }
+
   # Missing data for the exclusion threshold: tracker loss, blinks and
-  # out-of-range samples, before padding and speed-outlier removal (which
+  # out-of-range (or beyond the SD limit) samples, before padding and speed-outlier removal (which
   # are cleaning choices, not data the tracker lost)
   missing_raw <- is.na(d$pupil)
 
@@ -599,7 +673,7 @@ run_pipeline_core <- function(data, p, log = function(...) NULL, stop_if_empty =
       subject_prop_missing > p$missingthresh ~ "subject missing data",
       valid_total < 2 ~ "no valid samples",
       prop_missing > p$missingthresh ~ "trial missing data",
-      isTRUE(p$fix_exclude) & prop_off_fixation > p$fix_thresh ~ "gaze off fixation",
+      (if (isTRUE(p$fix_exclude)) prop_off_fixation > p$fix_thresh else FALSE) ~ "gaze off fixation",
       TRUE ~ "kept"),
       excluded = reason != "kept") %>%
     dplyr::select(-valid_total, -has_event, -missing_n)
@@ -809,6 +883,14 @@ off_fixation <- function(x, y, radius, ref = NULL) {
   if (!any(ok)) return(ok)
   if (is.null(ref)) ref <- c(stats::median(x[ok]), stats::median(y[ok]))
   ok & sqrt((x - ref[1])^2 + (y - ref[2])^2) > radius
+}
+
+# TRUE for pupil samples more than `n_sd` standard deviations from their
+# participant's mean pupil (missing samples are never outliers)
+pupil_sd_outliers <- function(pupil, subject, n_sd) {
+  m <- stats::ave(pupil, subject, FUN = function(v) mean(v, na.rm = TRUE))
+  s <- stats::ave(pupil, subject, FUN = function(v) stats::sd(v, na.rm = TRUE))
+  !is.na(pupil) & is.finite(s) & abs(pupil - m) > n_sd * s
 }
 
 # Mean gaze x and y per bin (gaze_x, gaze_y), over samples with a valid
@@ -1183,6 +1265,10 @@ methods_paragraph <- function(res, meta) {
     s <- c(s, if (all(is.finite(rng))) sprintf("Pupil values outside %s–%s were removed.", rng[1], rng[2])
               else if (is.finite(rng[1])) sprintf("Pupil values below %s were removed.", rng[1])
               else sprintf("Pupil values above %s were removed.", rng[2]))
+  }
+  if (!is.null(p$pupil_sd) && length(p$pupil_sd) == 1 && is.finite(p$pupil_sd)) {
+    s <- c(s, sprintf("Pupil values more than %s standard deviations from each participant's mean pupil size (computed after removing blinks%s) were removed.",
+                      p$pupil_sd, if (any(is.finite(rng))) " and out-of-range values" else ""))
   }
   if (identical(p$blink_method, "hershman")) {
     refs <- c(refs, hershman = "Hershman, R., Henik, A., & Cohen, N. (2018). A novel blink detection method based on pupillometry noise. *Behavior Research Methods, 50*, 107–114.")
