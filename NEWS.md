@@ -40,6 +40,10 @@
   Tobii, ...), filled with the reader's `pupil_left` / `pupil_right`,
   `blink_left` / `blink_right` and gaze columns. The R script includes the
   mapping.
+* Results: **Measure** for the raincloud and the pupil vs behaviour plot:
+  mean pupil, peak pupil (maximum) or time to peak in the window. The table
+  and download name the column (`mean_pupil`, `peak_pupil`,
+  `time_to_peak`).
 
 # shinygazer 0.3.7
 

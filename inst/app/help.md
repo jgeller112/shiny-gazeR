@@ -155,7 +155,8 @@ The plots are computed from the processed samples, separately from Group by, so 
 
 **Plot types**
 - **Time course.** Mean pupil over time per condition, with optional dashed lines at the mean of a behavioural time (e.g. RT) per condition.
-- **Raincloud.** Mean pupil in a time window, per condition: half-violin (distribution), box (median and IQR), one point per unit, optionally connected within subject.
+- **Raincloud.** Mean pupil, peak pupil or time to peak in a time window, per condition: half-violin (distribution), box (median and IQR), one point per unit, optionally connected within subject.
+- **Measure** (raincloud and behaviour plot): *Mean pupil* in the window, *Peak pupil* (the maximum) or *Time to peak* (the time of the maximum, ms). For the raincloud, the peak is found on each subject's averaged time course per condition; for the behaviour plot, on each trial (subject means average the trial values). A time to peak at the window's end usually means the pupil was still rising, so widen the window.
 - **Pupil vs behaviour.** Mean pupil in the window against a behavioural variable, per trial or per subject mean, with a least-squares line and *r* per condition.
 
 **Error bands**
@@ -283,7 +284,7 @@ The raw columns for retained trials, plus:
 | `mean`, `n` | Mean across units and how many units contribute |
 | `se`, `half`, `lower`, `upper` | Standard error, half-width of the band (SE or 95% CI) and its edges |
 | `error_type` | Which error the band shows |
-| `unit`, `value` | Raincloud / behaviour plots: the unit and its mean pupil in the window |
+| `unit`, `mean_pupil` / `peak_pupil` / `time_to_peak` | Raincloud / behaviour plots: the unit and the chosen measure in the window |
 
 ## Methods paragraph
 

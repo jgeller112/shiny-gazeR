@@ -1638,15 +1638,19 @@ server <- function(input, output, session) {
         conditionalPanel("input.plot_type != 'timecourse'",
           layout_columns(
             col_widths = c(3, 3, 3, 3), gap = "0.75rem",
-            numericInput("win_from", info("Window from (ms)", "Mean pupil in this window is used for the raincloud and the behaviour plot."), keep("win_from", win_default[1])),
+            numericInput("win_from", info("Window from (ms)", "The measure in this window is used for the raincloud and the behaviour plot."), keep("win_from", win_default[1])),
             numericInput("win_to", "Window to (ms)", keep("win_to", win_default[2])),
-            conditionalPanel("input.plot_type == 'raincloud'",
-                             checkboxInput("connect_units", "Connect each subject's points", keep("connect_units", TRUE))),
-            conditionalPanel("input.plot_type == 'scatter'",
-                             selectInput("behav_var", "Behavioural variable", numeric_choices(),
-                                         selected = keep("behav_var", intersect(c("rt", "RT", "acc"), numeric_choices())[1])),
-                             radioButtons("scatter_level", NULL, c("Trials" = "trial", "Subject means" = "subject"),
-                                          selected = keep("scatter_level", "trial"), inline = TRUE))
+            selectInput("win_measure", info("Measure", "Mean pupil in the window, peak pupil (the maximum), or time to peak (the time of the maximum, in ms). For the raincloud, the peak is taken from each subject's averaged time course in each condition; for the behaviour plot, from each trial (subject means average the trials)."),
+                        c("Mean pupil" = "mean", "Peak pupil" = "peak", "Time to peak" = "latency"),
+                        selected = keep("win_measure", "mean")),
+            tags$div(
+              conditionalPanel("input.plot_type == 'raincloud'",
+                               checkboxInput("connect_units", "Connect each subject's points", keep("connect_units", TRUE))),
+              conditionalPanel("input.plot_type == 'scatter'",
+                               selectInput("behav_var", "Behavioural variable", numeric_choices(),
+                                           selected = keep("behav_var", intersect(c("rt", "RT", "acc"), numeric_choices())[1])),
+                               radioButtons("scatter_level", NULL, c("Trials" = "trial", "Subject means" = "subject"),
+                                            selected = keep("scatter_level", "trial"), inline = TRUE)))
           )),
         conditionalPanel("input.plot_type == 'timecourse'",
           layout_columns(
@@ -1855,7 +1859,19 @@ server <- function(input, output, session) {
 
   windowed <- reactive({
     req(input$plot_type != "timecourse")
-    window_means(plot_bins(), c(input$win_from, input$win_to))
+    window_means(plot_bins(), c(input$win_from, input$win_to), measure())
+  })
+  measure <- reactive(if (is.null(input$win_measure)) "mean" else input$win_measure)
+  measure_name <- reactive(c(mean = "Mean pupil", peak = "Peak pupil", latency = "Time to peak")[[measure()]])
+  # Axis title for the windowed measure
+  measure_label <- reactive({
+    if (measure() == "latency") {
+      p <- result()$params
+      if (result()$timevar == "time_zero") paste0("Time to peak (ms from ", event_label(p$timelock_event), ")")
+      else "Time to peak (ms)"
+    } else {
+      paste(if (measure() == "peak") "Peak" else "Mean", sub("^P", "p", y_label()))
+    }
   })
 
   y_label <- reactive({
@@ -1881,8 +1897,8 @@ server <- function(input, output, session) {
     n <- dplyr::n_distinct(plot_bins()$unit$unit)
     switch(input$plot_type,
       timecourse = paste0("Pupil time course (", n, " ", unit, if (n != 1) "s", ")"),
-      raincloud = paste0("Mean pupil, ", input$win_from, "–", input$win_to, " ms (one point per ", unit, ")"),
-      scatter = paste0("Mean pupil, ", input$win_from, "–", input$win_to, " ms, vs ", input$behav_var))
+      raincloud = paste0(measure_name(), ", ", input$win_from, "–", input$win_to, " ms (one point per ", unit, ")"),
+      scatter = paste0(measure_name(), ", ", input$win_from, "–", input$win_to, " ms, vs ", input$behav_var))
   })
 
   output$results_note <- renderText({
@@ -1898,7 +1914,10 @@ server <- function(input, output, session) {
                   if (e$se_type == "within" && J < 2) " Within-subject error needs 2+ conditions, so between-units error is shown." else "")
     switch(input$plot_type,
       timecourse = err,
-      raincloud = "Half-violin = distribution, box = median and IQR, points = each unit's mean in the window.",
+      raincloud = paste0("Half-violin = distribution, box = median and IQR, points = each unit's ",
+                         c(mean = "mean", peak = "peak (maximum of its averaged time course)",
+                           latency = "time to peak (time of the maximum of its averaged time course)")[[measure()]],
+                         " in the window."),
       scatter = if (identical(input$scatter_level, "subject")) "Each point is one subject's mean in each condition; lines are least-squares fits."
                 else "Each point is one trial; lines are least-squares fits per condition.")
   })
@@ -1989,7 +2008,7 @@ server <- function(input, output, session) {
     plotly::layout(fig,
                    xaxis = list(title = "", tickvals = unname(pos), ticktext = names(pos),
                                 range = c(0.4, length(pos) + 0.9), zeroline = FALSE),
-                   yaxis = list(title = y_label(), zeroline = TRUE),
+                   yaxis = list(title = measure_label(), zeroline = measure() != "latency"),
                    showlegend = FALSE, hovermode = "closest")
   }
 
@@ -2027,13 +2046,16 @@ server <- function(input, output, session) {
       }
     }
     plotly::layout(fig, xaxis = list(title = input$behav_var),
-                   yaxis = list(title = paste(y_label(), "in window")),
+                   yaxis = list(title = paste(measure_label(), "in window")),
                    legend = list(orientation = "h", y = 1.1, x = 0), hovermode = "closest")
   }
 
   plot_values <- reactive({
     req(input$plot_type)
-    if (input$plot_type == "timecourse") timecourse() else windowed()$unit
+    if (input$plot_type == "timecourse") return(timecourse())
+    v <- windowed()$unit
+    names(v)[names(v) == "value"] <- c(mean = "mean_pupil", peak = "peak_pupil", latency = "time_to_peak")[[measure()]]
+    v
   })
 
   output$results_table <- DT::renderDT({

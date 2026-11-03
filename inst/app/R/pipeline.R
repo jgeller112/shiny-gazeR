@@ -979,20 +979,32 @@ summarise_timecourse <- function(unit_level, se_type = c("within", "between"),
                    else paste(if (use_within) "within" else "between", interval))
 }
 
-# Mean pupil within a time window: one value per unit x condition (for
-# rainclouds) and one per trial (for relating pupil to behaviour).
-window_means <- function(binned, window) {
+# Mean pupil, peak pupil or time to peak within a time window: one value per
+# unit x condition (for rainclouds; from the unit's averaged time course) and
+# one per trial (for relating pupil to behaviour).
+window_means <- function(binned, window, measure = c("mean", "peak", "latency")) {
   `%>%` <- dplyr::`%>%`
+  measure <- match.arg(measure)
   lo <- if (is.na(window[1])) -Inf else window[1]
   hi <- if (is.na(window[2])) Inf else window[2]
+  # Mean, peak (maximum) or time to peak (the bin of the maximum) of each
+  # time course in the window
+  stat <- function(value, timebins) {
+    ok <- !is.na(value)
+    if (!any(ok)) return(NA_real_)
+    switch(measure,
+           mean = mean(value[ok]),
+           peak = max(value[ok]),
+           latency = timebins[ok][which.max(value[ok])])
+  }
   per_unit <- binned$unit %>%
     dplyr::filter(timebins >= lo, timebins <= hi) %>%
     dplyr::group_by(unit, condition) %>%
-    dplyr::summarise(value = mean(value, na.rm = TRUE), .groups = "drop")
+    dplyr::summarise(value = stat(value, timebins), .groups = "drop")
   per_trial <- binned$trial %>%
     dplyr::filter(timebins >= lo, timebins <= hi) %>%
     dplyr::group_by(subject, trial, condition) %>%
-    dplyr::summarise(value = mean(value, na.rm = TRUE), .groups = "drop")
+    dplyr::summarise(value = stat(value, timebins), .groups = "drop")
   list(unit = per_unit, trial = per_trial)
 }
 
