@@ -1,5 +1,8 @@
 # shinygazer 0.3.8
 
+* Results: dropdowns in the plot controls (e.g. Measure) open past the
+  card edge; before, the card clipped the list so only the first choice
+  showed.
 * Export tab: **R script**. After a run, *View R script* opens the run as a
   standalone R script (copy it, or download it as `.R`): every
   pre-processing step written out as gazeR calls, with the settings used and

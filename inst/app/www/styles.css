@@ -40,6 +40,8 @@ pre.shiny-text-output { max-height: 420px; overflow-y: auto; font-size: .8rem; }
 .missing-key .missing-swatch:first-child { margin-left: 0; }
 
 .results-controls .card-body { padding-bottom: .25rem; }
+/* Let dropdowns (e.g. Measure) open past the card edge instead of being clipped */
+.results-controls, .results-controls .card-body { overflow: visible; }
 .results-controls .shiny-input-container { margin-bottom: .4rem; }
 
 /* Landing page */
