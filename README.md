@@ -54,6 +54,7 @@ Choose **Try the example data** on the home page to look around before loading y
 **Inspect and report**
 
 - **Trial viewer:** the raw signal (both eyes and gaze), or raw vs. cleaned vs. interpolated vs. baseline-corrected, with blinks and missing samples shaded and event markers.
+- **Gaze:** a heatmap of where gaze lands on the screen, by participant, trial and time window, with the fixation circle used for off-fixation exclusion.
 - **Quality:** missing data per trial and subject, plus every excluded trial with its reason.
 - **Results:**
   - time courses with **within-subject (Cousineau–Morey) or between-subject** SE or 95% CI, computed across subjects after averaging trials within subject;

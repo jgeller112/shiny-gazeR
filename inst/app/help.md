@@ -146,6 +146,16 @@ The top panel shows one trial at each stage:
 
 The shaded bands show what was removed: **pink** = blink (with its padding), **grey** = other removed or missing samples (tracker loss, speed outliers, out-of-range). The key above the plot gives the percentage of each. The bottom panel is the baseline-corrected (or z-scored) pupil. Dotted lines mark event messages. With time-locking, only the analysis window is processed: it is marked by dashed lines, the rest of the trial is greyed out, and the blue and orange lines and the bands are drawn only inside it. Excluded trials are not interpolated, so they show only the raw signal and the cleaning step, with a note saying why they were excluded.
 
+## Gaze
+
+A heatmap of where gaze lands on the screen, from the data as loaded (no pipeline run needed). Darker cells hold a larger share of the samples; hover over a cell for its percentage. The grey rectangle is the screen, and y runs downwards as in screen coordinates.
+
+- **Subject** and **Trial** narrow it to one participant or trial (*All* pools them). With per-eye gaze, **Eye** picks the left or right eye.
+- **From/To (ms)** limit it to a time window (e.g. the baseline period), relative to the time-lock event when trials are time-locked, otherwise to the start of each trial.
+- **Screen width/height** are read from DISPLAY_COORDS in EyeLink .asc files, set to 1 for normalised (Tobii) gaze, and otherwise default to the screen width in step 2 at 16:9.
+- **Valid pupil only** leaves out blink and no-pupil samples, where trackers report placeholder gaze far off screen.
+- With **Exclude gaze away from fixation** on, the fixation point and maximum distance are drawn as a dashed circle, and the note above the plot gives the share of samples outside it. With *Median gaze* the circle is each participant's own, so pick one participant to see it.
+
 ## Results
 The plots are computed from the processed samples, separately from Group by, so you can change them without re-running:
 

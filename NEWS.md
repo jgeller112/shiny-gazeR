@@ -1,3 +1,13 @@
+# shinygazer (development version)
+
+* New **Gaze** tab: a heatmap of where gaze lands on the screen, from the
+  data as loaded, for all participants or one, one trial or all, and an
+  optional time window (relative to the time-lock event or trial start).
+  The screen size is read from DISPLAY_COORDS in EyeLink .asc files (width
+  and now height), and with *Exclude gaze away from fixation* on, the
+  fixation point and maximum distance are drawn as a circle, with the share
+  of samples outside it.
+
 # shinygazer 0.3.8
 
 * Results: dropdowns in the plot controls (e.g. Measure) open past the

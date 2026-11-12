@@ -22,10 +22,12 @@ read_gazer_files <- function(paths, names = basename(paths), eye = "average") {
     d
   })
   out <- tibble::as_tibble(data.table::rbindlist(dfs, fill = TRUE))
-  # Screen width (px) from EyeLink DISPLAY_COORDS, for degrees of visual angle
+  # Screen size (px) from EyeLink DISPLAY_COORDS, for degrees of visual angle
+  # and the gaze heatmap
   asc <- grepl("\\.asc(\\.gz)?$", names, ignore.case = TRUE)
-  widths <- vapply(paths[asc], asc_display_width, numeric(1))
-  attr(out, "display_px") <- unique(widths[is.finite(widths)])
+  sizes <- vapply(paths[asc], asc_display_size, numeric(2))
+  attr(out, "display_px") <- unique(sizes[1, is.finite(sizes[1, ])])
+  attr(out, "display_py") <- unique(sizes[2, is.finite(sizes[2, ])])
   out
 }
 
@@ -93,15 +95,17 @@ table_eyes <- function(d, eye = "average", cols) {
   tibble::as_tibble(d)
 }
 
-# Screen width in pixels from an EyeLink .asc file's DISPLAY_COORDS message
-# (left top right bottom), searched near the start of the file; NA if absent
-asc_display_width <- function(path, n = 20000) {
+# Screen width and height in pixels from an EyeLink .asc file's
+# DISPLAY_COORDS message (left top right bottom), searched near the start of
+# the file; NA if absent
+asc_display_size <- function(path, n = 20000) {
   l <- tryCatch(readLines(path, n = n, warn = FALSE), error = function(e) character())
   hit <- regmatches(l, regexpr("DISPLAY_COORDS(\\s+-?[0-9.]+){4}", l))
-  if (!length(hit)) return(NA_real_)
+  if (!length(hit)) return(c(NA_real_, NA_real_))
   v <- as.numeric(strsplit(trimws(sub("DISPLAY_COORDS", "", hit[1])), "\\s+")[[1]])
-  v[3] - v[1] + 1
+  c(v[3] - v[1] + 1, v[4] - v[2] + 1)
 }
+asc_display_width <- function(path, n = 20000) asc_display_size(path, n)[1]
 
 # fread() needs R.utils for .gz files, so decompress them with base R into a
 # temporary file first (in chunks, so large files aren't read into memory)
@@ -1683,4 +1687,26 @@ write_bids <- function(root, res, raw, meta, task = "task") {
                          paste0(stem, "_desc-preproc_timeseries.json"), auto_unbox = TRUE, pretty = TRUE, null = "null")
   }
   invisible(deriv)
+}
+
+# ---- Gaze heatmap ----------------------------------------------------------
+
+# Share of gaze samples (%) in square cells over the screen (0..width,
+# 0..height) plus a small margin around it, for a heatmap. Samples beyond the
+# margin are left out of the grid. Empty cells are NA.
+gaze_grid <- function(x, y, width, height, n_x = 96, margin = 0.05) {
+  cell <- width / n_x
+  pad <- margin * max(width, height)
+  xb <- seq(-pad, width + pad + cell, by = cell)
+  yb <- seq(-pad, height + pad + cell, by = cell)
+  ix <- findInterval(x, xb, rightmost.closed = TRUE)
+  iy <- findInterval(y, yb, rightmost.closed = TRUE)
+  nx <- length(xb) - 1
+  ny <- length(yb) - 1
+  inside <- ix >= 1 & ix <= nx & iy >= 1 & iy <= ny
+  counts <- tabulate(ix[inside] + (iy[inside] - 1L) * nx, nbins = nx * ny)
+  z <- matrix(100 * counts / max(length(x), 1), nrow = ny, ncol = nx, byrow = TRUE)
+  z[z == 0] <- NA
+  list(x = xb[-1] - cell / 2, y = yb[-1] - cell / 2, z = z,
+       off_screen = mean(x < 0 | x > width | y < 0 | y > height))
 }

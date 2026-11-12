@@ -442,6 +442,23 @@ ui <- page_sidebar(
     ),
 
     nav_panel(
+      tagList(icon("crosshairs"), "Gaze"), value = "gaze",
+      div(class = "d-flex flex-wrap align-items-end gap-2 mb-2",
+          selectInput("gaze_subject", "Subject", NULL, width = "220px"),
+          selectInput("gaze_trial", "Trial", NULL, width = "140px"),
+          uiOutput("gaze_eye_ui"),
+          numericInput("gaze_from", info("From (ms)", "Start of the time window. Relative to the time-lock event when trials are time-locked (step 2), otherwise to the start of each trial. Empty: from the start."), NA, width = "120px"),
+          numericInput("gaze_to", info("To (ms)", "End of the time window. Empty: to the end."), NA, width = "120px"),
+          numericInput("gaze_w", info("Screen width", "In gaze units: pixels, or 1 for Tobii (0-1 display area). Read from DISPLAY_COORDS in EyeLink .asc files."), NA, min = 0, width = "120px"),
+          numericInput("gaze_h", "Screen height", NA, min = 0, width = "120px"),
+          div(class = "mb-3 ms-2",
+              input_switch("gaze_valid", info("Valid pupil only", "Leave out samples in a blink or with no pupil, where gaze is usually invalid (often far off screen)."), TRUE)),
+          div(class = "mb-3",
+              input_switch("gaze_log", info("Log colour scale", "Makes sparse areas visible next to a dense fixation spot."), FALSE))),
+      uiOutput("gaze_ui")
+    ),
+
+    nav_panel(
       tagList(icon("clipboard-check"), "Quality"), value = "quality",
       uiOutput("quality_ui")
     ),
@@ -1460,6 +1477,188 @@ server <- function(input, output, session) {
                      legend = list(orientation = "h", y = 1.08, x = 0)) |>
       tidy_plot() |>
       with_overlays(shapes, annots)
+  })
+
+  # ---- Gaze heatmap -------------------------------------------------------
+  all_key <- "__all__"
+  # A numeric input's value, or NA when it is empty
+  num_in <- function(v) if (length(v) == 1 && is.finite(v)) v else NA
+
+  observeEvent(std(), {
+    subs <- sort(unique(as.character(std()$subject)))
+    updateSelectInput(session, "gaze_subject", choices = c("All participants" = all_key, subs),
+                      selected = if (isTRUE(input$gaze_subject %in% subs)) input$gaze_subject else all_key)
+  })
+  observeEvent(list(input$gaze_subject, std()), {
+    req(std(), input$gaze_subject)
+    d <- std()
+    if (!identical(input$gaze_subject, all_key)) d <- d[as.character(d$subject) == input$gaze_subject, ]
+    trials <- as.character(sort(unique(d$trial)))
+    updateSelectInput(session, "gaze_trial", choices = c("All trials" = all_key, trials),
+                      selected = if (isTRUE(input$gaze_trial %in% trials)) input$gaze_trial else all_key)
+  })
+
+  # Screen size on each load: DISPLAY_COORDS when the .asc files have it,
+  # 0-1 for normalised (Tobii) gaze, otherwise the screen width in step 2 at 16:9
+  observeEvent(std(), {
+    d <- std()
+    w <- attr(raw(), "display_px")
+    h <- attr(raw(), "display_py")
+    if (!length(w) && "x" %in% names(d)) {
+      q <- stats::quantile(abs(c(d$x, d$y)), 0.99, na.rm = TRUE, names = FALSE)
+      if (is.finite(q) && q <= 1.5) w <- h <- 1
+    }
+    if (!length(w)) w <- if (isTRUE(input$screen_px > 0)) input$screen_px else 1920
+    if (!length(h)) h <- round(max(w) * 9 / 16)
+    updateNumericInput(session, "gaze_w", value = max(w))
+    updateNumericInput(session, "gaze_h", value = max(h))
+  })
+
+  gaze_eyes <- reactive(!is.null(std()) && all(c("x_left", "x_right") %in% names(std())))
+  output$gaze_eye_ui <- renderUI({
+    req(gaze_eyes())
+    selectInput("gaze_eye", "Eye", c("Mapped columns" = "", Left = "left", Right = "right"),
+                selected = isolate(input$gaze_eye), width = "150px")
+  })
+
+  # Gaze x/y (and pupil) of the chosen eye, before any filtering
+  gaze_cols <- function(d) {
+    e <- if (gaze_eyes()) input$gaze_eye else NULL
+    if (length(e) && nzchar(e)) {
+      d$x <- d[[paste0("x_", e)]]
+      d$y <- d[[paste0("y_", e)]]
+      if (paste0("pupil_", e) %in% names(d)) d$pupil <- d[[paste0("pupil_", e)]]
+    }
+    d
+  }
+
+  gaze_data <- reactive({
+    d <- std()
+    req(d, input$gaze_subject, input$gaze_trial)
+    if (!all(c("x", "y") %in% names(d))) return(NULL)
+    d <- gaze_cols(d)
+    # Each participant's median gaze over all their samples, as the
+    # off-fixation exclusion uses with Fixation point = Median gaze
+    ok <- is.finite(d$x) & is.finite(d$y)
+    medians <- d[ok, ] |>
+      dplyr::group_by(subject) |>
+      dplyr::summarise(mx = stats::median(x), my = stats::median(y), .groups = "drop")
+    if (!identical(input$gaze_subject, all_key)) d <- d[as.character(d$subject) == input$gaze_subject, ]
+    if (!identical(input$gaze_trial, all_key)) d <- d[as.character(d$trial) == input$gaze_trial, ]
+    req(nrow(d) > 0)
+    # Time window, relative to the time-lock event or to trial start
+    locked <- isTRUE(input$timelock) && "message" %in% names(d) && length(input$timelock_event)
+    if (!is.na(num_in(input$gaze_from)) || !is.na(num_in(input$gaze_to))) {
+      d <- d |>
+        dplyr::group_by(subject, trial) |>
+        dplyr::mutate(.t = if (locked) event_onset(time, message, input$timelock_event) else time - min(time)) |>
+        dplyr::ungroup()
+      lo <- if (!is.na(num_in(input$gaze_from))) input$gaze_from else -Inf
+      hi <- if (!is.na(num_in(input$gaze_to))) input$gaze_to else Inf
+      d <- d[!is.na(d$.t) & d$.t >= lo & d$.t <= hi, ]
+    }
+    n_all <- nrow(d)
+    if (isTRUE(input$gaze_valid)) {
+      bad <- is.na(d$pupil) | d$pupil <= 0
+      if ("blink" %in% names(d)) bad <- bad | (!is.na(d$blink) & d$blink > 0)
+      d <- d[!bad, ]
+    }
+    n_valid <- nrow(d)
+    d <- d[is.finite(d$x) & is.finite(d$y), ]
+    d <- dplyr::left_join(d[, c("subject", "x", "y")], medians, by = "subject")
+    list(d = d, n_all = n_all, n_valid = n_valid, locked = locked)
+  })
+
+  # Fixation point(s) and radius from the off-fixation settings in step 2;
+  # NULL when the exclusion is off or its settings are incomplete
+  gaze_fix <- reactive({
+    if (!isTRUE(input$fix_exclude)) return(NULL)
+    p <- list(fix_ref = input$fix_ref, fix_x = input$fix_x, fix_y = input$fix_y, fix_radius = input$fix_radius,
+              fix_units = input$fix_units, screen_px = input$screen_px, screen_cm = input$screen_cm,
+              view_cm = input$view_cm)
+    radius <- tryCatch(fixation_radius(p), error = function(e) NULL)
+    ref <- tryCatch(list(fixation_reference(p)), error = function(e) NULL)
+    if (is.null(radius) || is.null(ref)) return(NULL)
+    list(radius = radius, ref = ref[[1]])
+  })
+
+  output$gaze_ui <- renderUI({
+    if (is.null(std())) {
+      return(empty_state("crosshairs", "No data loaded", "Load data in step 1 to see where gaze lands on the screen."))
+    }
+    if (!all(c("x", "y") %in% names(std()))) {
+      return(empty_state("crosshairs", "No gaze columns",
+                         "Choose the gaze x and y columns under Gaze position in step 2 (shown when Exclude gaze away from fixation or Add mean gaze x/y per bin is ticked)."))
+    }
+    tagList(uiOutput("gaze_note"), plotly::plotlyOutput("gaze_plot", height = "620px"))
+  })
+
+  output$gaze_note <- renderUI({
+    g <- gaze_data()
+    req(g)
+    pct <- function(x) sprintf("%.1f%%", 100 * x)
+    n <- nrow(g$d)
+    off_screen <- if (n) mean(g$d$x < 0 | g$d$x > input$gaze_w | g$d$y < 0 | g$d$y > input$gaze_h) else NA
+    fx <- gaze_fix()
+    off_fix <- if (!is.null(fx) && n) {
+      rx <- if (is.null(fx$ref)) g$d$mx else fx$ref[1]
+      ry <- if (is.null(fx$ref)) g$d$my else fx$ref[2]
+      mean(sqrt((g$d$x - rx)^2 + (g$d$y - ry)^2) > fx$radius)
+    }
+    div(class = "small text-muted mb-1",
+        tags$b(format(n, big.mark = ",")), " samples with gaze",
+        if (g$n_valid < g$n_all) paste0(" (", pct(1 - g$n_valid / g$n_all), " left out: blink or no pupil)"),
+        if (n) tagList(" · ", tags$b(pct(off_screen)), " off screen"),
+        if (!is.null(off_fix)) tagList(" · ", tags$b(pct(off_fix)), " outside the fixation circle"),
+        if (!is.na(num_in(input$gaze_from)) || !is.na(num_in(input$gaze_to)))
+          paste0(" · time relative to ", if (g$locked) "the time-lock event" else "trial start"),
+        if (!is.null(fx) && is.null(fx$ref) && identical(input$gaze_subject, all_key))
+          " · circles are per participant (median gaze): pick one participant to see theirs")
+  })
+
+  output$gaze_plot <- plotly::renderPlotly({
+    g <- gaze_data()
+    req(g, nrow(g$d) > 0)
+    w <- input$gaze_w
+    h <- input$gaze_h
+    req(isTRUE(w > 0), isTRUE(h > 0))
+    grid <- gaze_grid(g$d$x, g$d$y, w, h)
+    z <- if (isTRUE(input$gaze_log)) log10(grid$z) else grid$z
+    # One hue, light to dark: the app's primary blue
+    ramp <- list(c(0, "#dbe4ff"), c(0.5, "#5c7cfa"), c(1, "#1c2f80"))
+    label <- matrix(sprintf("%.2f%% of samples", grid$z), nrow = nrow(grid$z))
+    fig <- plotly::plot_ly(
+      x = grid$x, y = grid$y, z = z, text = label, type = "heatmap",
+      colorscale = ramp, hoverongaps = FALSE,
+      hovertemplate = "x %{x:.0f}, y %{y:.0f}<br>%{text}<extra></extra>",
+      colorbar = list(title = list(text = if (isTRUE(input$gaze_log)) "% of samples<br>(log10)" else "% of samples"),
+                      thickness = 12))
+
+    shapes <- list(list(type = "rect", x0 = 0, x1 = w, y0 = 0, y1 = h, layer = "above",
+                        line = list(color = "#868e96", width = 1.5)))
+    fx <- gaze_fix()
+    centre <- if (!is.null(fx)) {
+      if (!is.null(fx$ref)) fx$ref
+      else if (!identical(input$gaze_subject, all_key)) c(g$d$mx[1], g$d$my[1])
+    }
+    if (length(centre) == 2) {
+      shapes <- c(shapes, list(list(
+        type = "circle", x0 = centre[1] - fx$radius, x1 = centre[1] + fx$radius,
+        y0 = centre[2] - fx$radius, y1 = centre[2] + fx$radius, layer = "above",
+        line = list(color = palette[2], width = 2, dash = "dash"))))
+      fig <- plotly::add_markers(fig, x = centre[1], y = centre[2], inherit = FALSE, name = "Fixation point",
+                                 marker = list(symbol = "cross-thin", size = 14, line = list(color = palette[2], width = 2)),
+                                 hovertemplate = "Fixation point<br>x %{x:.0f}, y %{y:.0f}<extra></extra>")
+    }
+    unit <- if (w <= 1.5) "(0-1)" else "(px)"
+    fig |>
+      plotly::layout(
+        shapes = shapes, showlegend = FALSE,
+        xaxis = list(title = paste("Gaze x", unit), range = range(grid$x), zeroline = FALSE, showgrid = FALSE),
+        yaxis = list(title = paste("Gaze y", unit), range = rev(range(grid$y)), zeroline = FALSE, showgrid = FALSE,
+                     scaleanchor = "x", scaleratio = 1)) |>
+      tidy_plot() |>
+      plotly::layout(hovermode = "closest")
   })
 
   # ---- Quality ------------------------------------------------------------
